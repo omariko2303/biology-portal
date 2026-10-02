@@ -52,7 +52,7 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, file_b
         raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets!")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-3.8-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 You are evaluating a student's actual homework submission attached as an image or PDF.
