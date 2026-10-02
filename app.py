@@ -1,11 +1,13 @@
 import streamlit as st
 import sqlite3
 import datetime
+import pypdf
+import io
 import google.generativeai as genai
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
-    page_title="IGCSE Biology Assessment Portal",
+    page_title="IGCSE Biology Assessment & Teacher Portal",
     page_icon="🧬",
     layout="wide"
 )
@@ -21,7 +23,9 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_name TEXT,
             assignment_title TEXT,
-            student_answer TEXT,
+            file_name TEXT,
+            file_bytes BLOB,
+            extracted_text TEXT,
             ai_draft TEXT,
             final_report TEXT,
             status TEXT,
@@ -33,8 +37,21 @@ def init_db():
 
 init_db()
 
-# ==================== HELPER FUNCTIONS (GEMINI API) ====================
-def analyze_text_gemini(student_name, assignment_title, instructions, student_answer):
+# ==================== HELPER: EXTRACT TEXT FROM PDF ====================
+def extract_text_from_pdf(file_bytes):
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        text = ""
+        for page in reader.pages:
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted + "\n"
+        return text if text.strip() else "No readable text found in PDF (might be scanned images)."
+    except Exception as e:
+        return f"Error extracting PDF text: {e}"
+
+# ==================== HELPER: GEMINI AI ANALYSIS ====================
+def analyze_homework_gemini(student_name, assignment_title, instructions, homework_text):
     api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
     if not api_key:
@@ -44,16 +61,16 @@ def analyze_text_gemini(student_name, assignment_title, instructions, student_an
     model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-Evaluate the student's submitted text answer.
+Evaluate the student's submitted homework text extracted from their PDF file.
 Student Name: {student_name}
 Assignment: {assignment_title}
 Teacher Focus/Instructions: {instructions}
 
-Student Answer:
-{student_answer}
+Student Homework Content:
+{homework_text}
 
 Provide a comprehensive diagnostic evaluation report in Markdown format:
-1. Executive Summary & Estimated Raw Score / Grade Equivalent.
+1. Executive Summary & Estimated Raw Score / Grade Equivalent (out of total marks).
 2. Strengths (AO1 Knowledge, AO2 Application, AO3 Practical).
 3. Specific Misconceptions & Missing Cambridge Mark Scheme Keywords.
 4. Actionable Next Steps for Improvement.
@@ -66,42 +83,45 @@ Provide a comprehensive diagnostic evaluation report in Markdown format:
 st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
 
 tab1, tab2, tab3 = st.tabs([
-    "📤 Student Portal (Submit Text Answer)", 
-    "📊 Student Results (Approved Reports)", 
-    "🔒 Teacher Dashboard (Review & Release)"
+    "📤 Student Portal (Submit PDF Homework)", 
+    "📊 Student Results & Status Lookup", 
+    "🔒 Teacher Review Dashboard"
 ])
 
 # -------------------- TAB 1: STUDENT SUBMIT --------------------
 with tab1:
-    st.header("Submit Homework Answer (Text Mode)")
+    st.header("Upload Homework PDF for AI Evaluation")
     
     col1, col2 = st.columns(2)
     with col1:
-        student_name = st.text_input("Student Name", placeholder="e.g., Omar")
+        student_name = st.text_input("Student Name", placeholder="e.g., Omar Mohamed")
     with col2:
-        assignment_title = st.text_input("Assignment Title", placeholder="e.g., Cell Structure & Osmosis Quiz")
+        assignment_title = st.text_input("Assignment Title", placeholder="e.g., Paper 2 - Core Theory Quiz")
         
     instructions = st.text_area(
         "Teacher Instructions / Mark Scheme Focus", 
-        value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas)."
+        value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas, active transport)."
     )
     
-    student_answer = st.text_area(
-        "Type or Paste Your Homework Answer Here", 
-        placeholder="Write your biological explanations, definitions, and answers here...",
-        height=200
-    )
+    uploaded_file = st.file_uploader("Upload Homework File (PDF only)", type=["pdf"])
     
-    if st.button("🚀 Submit Answer to Teacher", type="primary"):
+    if st.button("🚀 Submit PDF to Teacher & AI", type="primary"):
         if not student_name or not assignment_title:
             st.error("❌ Please enter student name and assignment title.")
-        elif not student_answer.strip():
-            st.error("❌ Please write your answer before submitting.")
+        elif not uploaded_file:
+            st.error("❌ Please upload a PDF homework file.")
         else:
-            with st.spinner("Analyzing answer with Gemini AI and submitting to teacher..."):
+            with st.spinner("Processing PDF, analyzing with Gemini AI, and submitting..."):
+                file_bytes = uploaded_file.read()
+                file_name = uploaded_file.name
+                
+                # Extract text from PDF
+                homework_text = extract_text_from_pdf(file_bytes)
+                
                 try:
-                    ai_draft = analyze_text_gemini(
-                        student_name, assignment_title, instructions, student_answer
+                    # Generate AI analysis
+                    ai_draft = analyze_homework_gemini(
+                        student_name, assignment_title, instructions, homework_text
                     )
                     
                     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -109,29 +129,29 @@ with tab1:
                     c = conn.cursor()
                     c.execute('''
                         INSERT INTO submissions 
-                        (student_name, assignment_title, student_answer, ai_draft, final_report, status, submitted_at)
-                        VALUES (?, ?, ?, ?, ?, 'PENDING', ?)
-                    ''', (student_name, assignment_title, student_answer, ai_draft, "", now))
+                        (student_name, assignment_title, file_name, file_bytes, extracted_text, ai_draft, final_report, status, submitted_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                    ''', (student_name, assignment_title, file_name, file_bytes, homework_text, ai_draft, "", now))
                     conn.commit()
                     conn.close()
                     
-                    st.success(f"✅ Submission successful, {student_name}! Your answer is pending teacher review. Results will appear here once approved.")
+                    st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. You can check your status in the 'Student Results' tab.")
                 except Exception as e:
-                    st.error(f"⚠️ Error processing text: {e}")
+                    st.error(f"⚠️ Error during AI processing: {e}")
 
 # -------------------- TAB 2: STUDENT LOOKUP --------------------
 with tab2:
-    st.header("Check Approved Homework Reports")
-    search_name = st.text_input("Enter Student Name to view approved results")
+    st.header("Check Submission Status & Approved Reports")
+    search_name = st.text_input("Enter Your Student Name to Lookup Results")
     
-    if st.button("🔍 Search Reports"):
+    if st.button("🔍 Check My Submissions"):
         if search_name.strip():
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute('''
-                SELECT assignment_title, final_report, submitted_at 
+                SELECT assignment_title, file_name, final_report, status, submitted_at 
                 FROM submissions 
-                WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
+                WHERE LOWER(student_name) = LOWER(?)
                 ORDER BY id DESC
             ''', (search_name.strip(),))
             results = c.fetchall()
@@ -139,11 +159,22 @@ with tab2:
             
             if results:
                 for row in results:
-                    st.subheader(f"📚 {row[0]} (Approved Date: {row[2]})")
-                    st.markdown(row[1])
+                    a_title, f_name, report, status, sub_time = row
+                    
+                    if status == 'APPROVED':
+                        st.success(f"📚 **{a_title}** — Status: **APPROVED** (Submitted: {sub_time})")
+                        st.markdown(report)
+                        st.download_button(
+                            label="📥 Download Approved Report as Text",
+                            data=report,
+                            file_name=f"{a_title}_Report.txt",
+                            mime="text/plain"
+                        )
+                    else:
+                        st.warning(f"⏳ **{a_title}** — Status: **PENDING REVIEW** (Submitted: {sub_time}). Your teacher is currently reviewing your assignment.")
                     st.divider()
             else:
-                st.info("ℹ️ No approved reports found for this name yet. If you submitted recently, your teacher is still reviewing it.")
+                st.info("ℹ️ No submissions found for this name. Make sure you entered the exact name used during submission.")
 
 # -------------------- TAB 3: TEACHER DASHBOARD --------------------
 with tab3:
@@ -155,31 +186,50 @@ with tab3:
     if pin == TEACHER_PIN:
         st.success("🔓 Access Granted")
         
+        # Dashboard Quick Metrics
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("SELECT id, student_name, assignment_title, student_answer, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
-        pending = c.fetchall()
+        c.execute("SELECT COUNT(*) FROM submissions WHERE status = 'PENDING'")
+        pending_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM submissions WHERE status = 'APPROVED'")
+        approved_count = c.fetchone()[0]
         conn.close()
         
-        if pending:
-            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[5]})": row for row in pending}
-            selected_option = st.selectbox("Select Pending Submission:", list(options.keys()))
+        m1, m2 = st.columns(2)
+        m1.metric("Pending Reviews ⏳", pending_count)
+        m2.metric("Approved Reports ✅", approved_count)
+        st.divider()
+        
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, student_name, assignment_title, file_name, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
+        pending_list = c.fetchall()
+        conn.close()
+        
+        if pending_list:
+            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[6]})": row for row in pending_list}
+            selected_option = st.selectbox("Select Pending Submission to Review:", list(options.keys()))
             
             selected_row = options[selected_option]
-            sub_id, s_name, a_title, s_answer, ai_draft, sub_time = selected_row
+            sub_id, s_name, a_title, f_name, f_bytes, ai_draft, sub_time = selected_row
             
             st.divider()
-            col_ans, col_edit = st.columns([1, 1])
+            col_file, col_edit = st.columns([1, 1])
             
-            with col_ans:
-                st.subheader("📝 Student's Submitted Answer")
-                st.info(s_answer)
+            with col_file:
+                st.subheader(f"📄 Student PDF ({f_name})")
+                st.download_button(
+                    label=f"⬇️️ Download Student PDF File",
+                    data=f_bytes,
+                    file_name=f_name,
+                    mime="application/pdf"
+                )
             
             with col_edit:
-                st.subheader("✏️ AI Draft Evaluation (Teacher Edit)")
-                final_report_input = st.text_area("Review and edit evaluation before releasing to student:", value=ai_draft, height=300)
+                st.subheader("✏️ AI Draft Evaluation (Teacher Editing)")
+                final_report_input = st.text_area("Review and refine the AI diagnostic report before release:", value=ai_draft, height=450)
                 
-                if st.button("✅ Approve & Release Report to Student", type="primary"):
+                if st.button("✅ Approve & Publish Report to Student", type="primary"):
                     conn = sqlite3.connect(DB_FILE)
                     c = conn.cursor()
                     c.execute('''
@@ -190,10 +240,10 @@ with tab3:
                     conn.commit()
                     conn.close()
                     st.balloons()
-                    st.success("🎉 Report approved and released to student!")
+                    st.success("🎉 Report approved and successfully released to the student portal!")
                     st.rerun()
         else:
-            st.info("🎉 No pending submissions to review!")
+            st.info("🎉 All caught up! No pending student submissions to review.")
     elif pin != "":
         st.error("🔒 Incorrect PIN!")
        
