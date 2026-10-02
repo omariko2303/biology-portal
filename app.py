@@ -7,7 +7,7 @@ import google.generativeai as genai
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
-    page_title="IGCSE Biology Assessment & Teacher Portal",
+    page_title="IGCSE Biology Assessment Portal",
     page_icon="🧬",
     layout="wide"
 )
@@ -58,7 +58,8 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, homewo
         raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    # استخدام النموذج المحدث المتاح
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Evaluate the student's submitted homework text extracted from their PDF file.
@@ -219,7 +220,7 @@ with tab3:
             with col_file:
                 st.subheader(f"📄 Student PDF ({f_name})")
                 st.download_button(
-                    label=f"⬇️️ Download Student PDF File",
+                    label=f"⬇ Download Student PDF File",
                     data=f_bytes,
                     file_name=f_name,
                     mime="application/pdf"
