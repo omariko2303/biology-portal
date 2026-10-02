@@ -11,7 +11,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# SQLite Database Setup
 DB_FILE = "homework_portal_v3.db"
 
 def init_db():
@@ -36,40 +35,42 @@ def init_db():
 
 init_db()
 
-# ==================== HELPER: GEMINI AI VISION ANALYSIS ====================
+# تعليمات كامبريدج الثابتة (مخفية عن واجهة الطالب وتُنفذ تلقائياً)
+DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
+    "Strictly enforce Cambridge Mark Scheme keywords: "
+    "1. Diffusion must include 'net movement', 'higher to lower concentration', 'concentration gradient', 'random movement'. "
+    "2. Osmosis must include 'net movement of water molecules', 'higher water potential', 'lower water potential', 'partially permeable membrane'. "
+    "3. Active transport must include 'against concentration gradient', 'energy from respiration / ATP', 'carrier proteins'. "
+    "4. Distinguish chloroplast (organelle/site) from chlorophyll (green pigment absorbing light). "
+    "5. Magnification: M = I/A, consistent unit conversion (1 mm = 1000 um), no units for magnification, with 'x' sign."
+)
+
 def analyze_homework_gemini(student_name, assignment_title, instructions, file_bytes, mime_type, file_name):
     api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
     if not api_key:
-        raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
+        raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets!")
 
     genai.configure(api_key=api_key)
-    
-    model = genai.GenerativeModel("gemini-3.8-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-You are evaluating a student's actual homework submission attached as an image, scan, or PDF.
+You are evaluating a student's actual homework submission attached as an image or PDF.
 Candidate Name: {student_name}
 Assignment: {assignment_title}
-Teacher Focus & Instructions: {instructions}
+Instructions & Mark Scheme Standard: {instructions}
 
-Carefully inspect the handwritten answers, text, or diagrams in the attached document. Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format:
-1. **Executive Summary & Estimated Raw Score / Grade Equivalent** (Provide a realistic estimated score out of total marks based on what is written).
-2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment** (Analyze what the student wrote, pointing out exact correct keywords used vs. missing Cambridge mark scheme keywords).
-3. **Specific Misconceptions & Errors** (Correct any biological inaccuracies, e.g., water potential vs water concentration, chloroplast vs chlorophyll).
-4. **Actionable Next Steps for Improvement** (Precise guidance for the student to achieve an A*).
+Carefully inspect the handwritten answers or diagrams in the attached document. Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format:
+1. **Executive Summary & Estimated Raw Score / Grade Equivalent** (Provide a realistic estimated score out of total marks).
+2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment** (Analyze exact correct keywords used vs. missing ones).
+3. **Specific Misconceptions & Errors** (Correct biological inaccuracies).
+4. **Actionable Next Steps for Improvement** (Precise guidance for an A*).
 """
 
     if mime_type and "image" in mime_type:
-        file_part = {
-            "mime_type": mime_type,
-            "data": file_bytes
-        }
+        file_part = {"mime_type": mime_type, "data": file_bytes}
     else:
-        file_part = {
-            "mime_type": "application/pdf",
-            "data": file_bytes
-        }
+        file_part = {"mime_type": "application/pdf", "data": file_bytes}
 
     response = model.generate_content([prompt_text, file_part])
     return response.text
@@ -93,10 +94,7 @@ with tab1:
     with col2:
         assignment_title = st.text_input("Assignment Title", placeholder="e.g., hw")
         
-    instructions = st.text_area(
-        "Teacher Instructions / Mark Scheme Focus", 
-        value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas, active transport)."
-    )
+    # تم إخفاء حقل التعليمات عن واجهة الطالب بالكامل واستخدام المعايير الثابتة في الخلفية
     
     uploaded_file = st.file_uploader(
         "Upload Homework File (Accepted formats: PDF, PNG, JPG, JPEG)", 
@@ -115,8 +113,9 @@ with tab1:
                 mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
                 
                 try:
+                    # تمرير المعايير الثابتة خلف الكواليس
                     ai_draft = analyze_homework_gemini(
-                        student_name, assignment_title, instructions, file_bytes, mime_type, file_name
+                        student_name, assignment_title, DEFAULT_CAMBRIDGE_INSTRUCTIONS, file_bytes, mime_type, file_name
                     )
                     
                     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -130,7 +129,7 @@ with tab1:
                     conn.commit()
                     conn.close()
                     
-                    st.success(f"✅ Submission successful, {student_name}! Your homework has been evaluated by AI and sent to the teacher for review.")
+                    st.success(f"✅ Submission successful, {student_name}! Your homework has been sent to your teacher for review.")
                 except Exception as e:
                     st.error(f"⚠️ Error during AI processing: {e}")
 
@@ -169,7 +168,7 @@ with tab2:
                         st.warning(f"⏳ **{a_title}** — Status: **PENDING REVIEW** (Submitted: {sub_time}). Your teacher is currently reviewing your assignment.")
                     st.divider()
             else:
-                st.info("ℹ️ No submissions found for this name. Make sure you entered the exact name used during submission.")
+                st.info("ℹ️ No submissions found for this name.")
 
 # -------------------- TAB 3: TEACHER DASHBOARD --------------------
 with tab3:
@@ -194,7 +193,6 @@ with tab3:
         m2.metric("Approved Reports ✅", approved_count)
         st.divider()
         
-        # اختيار القسم (طلبات معلقة للمراجعة أو تقارير معتمدة)
         dashboard_mode = st.radio(
             "Select Dashboard View:", 
             ["⏳ Pending Submissions", "✅ Approved Reports Management"],
@@ -263,7 +261,7 @@ with tab3:
             else:
                 st.info("🎉 All caught up! No pending student submissions to review.")
                 
-        else: # Approved Reports Management
+        else:
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute("SELECT id, student_name, assignment_title, file_name, final_report, submitted_at FROM submissions WHERE status = 'APPROVED'")
