@@ -59,8 +59,8 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, homewo
 
     genai.configure(api_key=api_key)
     
-    # تم تعديل اسم النموذج هنا ليطابق أحدث متطلبات واجهة برمجة التطبيقات
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    # تم تحديث اسم النموذج ليطابق أحدث متطلبات جوجل الرسمية
+    model = genai.GenerativeModel("gemini-3.8-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Evaluate the student's submitted homework text extracted from their PDF file.
@@ -139,7 +139,7 @@ with tab1:
                     
                     st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. You can check your status in the 'Student Results' tab.")
                 except Exception as e:
-                    st.error(f"⚠️️ Error during AI processing: {e}")
+                    st.error(f"⚠️ Error during AI processing: {e}")
 
 # -------------------- TAB 2: STUDENT LOOKUP --------------------
 with tab2:
