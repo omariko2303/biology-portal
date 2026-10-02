@@ -4,6 +4,7 @@ import datetime
 import os
 import base64
 import requests
+import io
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
@@ -38,11 +39,27 @@ def init_db():
 init_db()
 
 # ==================== HELPER FUNCTIONS (GROQ API) ====================
+def extract_pdf_text(file_bytes):
+    """Extract text safely from PDF bytes if possible"""
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        text = ""
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
+        return text if text.strip() else "PDF contains scanned images/handwritten work."
+    except Exception:
+        try:
+            return file_bytes.decode('utf-8', errors='ignore')[:3000]
+        except:
+            return "PDF file submitted."
+
 def analyze_homework_groq(file_bytes, mime_type, student_name, assignment_title, instructions):
-    # Fetch key from Streamlit Secrets
     api_key = st.secrets.get("GROQ_API_KEY")
     if not api_key:
-        raise Exception("Groq API Key is not configured in Streamlit Secrets!")
+        raise Exception("GROQ_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
 
     headers = {
         "Authorization": f"Bearer {api_key.strip()}",
@@ -83,14 +100,9 @@ Provide a detailed diagnostic evaluation report in Markdown format:
             "temperature": 0.2
         }
     else:
-        # Fallback for PDF text content parsing
-        try:
-            extracted_text = file_bytes.decode('utf-8', errors='ignore')
-        except:
-            extracted_text = "Student PDF work attached."
-
+        extracted_text = extract_pdf_text(file_bytes)
         payload = {
-            "model": "llama-3.3-70b-versatile",
+            "model": "llama3-70b-8192",
             "messages": [
                 {
                     "role": "user",
@@ -167,7 +179,7 @@ with tab1:
                     
                     st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. Results will be visible once approved.")
                 except Exception as e:
-                    st.error(f"⚠️ Error processing file: {e}")
+                    st.error(f"⚠️️ Error processing file: {e}")
 
 # -------------------- TAB 2: STUDENT LOOKUP --------------------
 with tab2:
