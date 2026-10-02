@@ -2,7 +2,6 @@ import streamlit as st
 import sqlite3
 import datetime
 import os
-import requests
 import tempfile
 import google.generativeai as genai
 
@@ -38,12 +37,18 @@ def init_db():
 
 init_db()
 
+# Default API Key
+DEFAULT_API_KEY = "AQ.Ab8RN6LNGTlgKiUAR4rD6barZZFoo6vkNMBBWyrXeE8jWKYmjA"
+
 # ==================== HELPER FUNCTIONS ====================
 def analyze_homework(api_key, file_bytes, mime_type, file_name, student_name, assignment_title, instructions):
-    genai.configure(api_key=api_key)
+    clean_key = api_key.strip()
+    genai.configure(api_key=clean_key)
     
-    # Write bytes to temp file for Gemini API processing
     ext = os.path.splitext(file_name)[1]
+    if not ext:
+        ext = ".pdf" if "pdf" in mime_type else ".jpg"
+        
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
@@ -83,7 +88,7 @@ tab1, tab2, tab3 = st.tabs([
 with tab1:
     st.header("Upload Homework (PDF or Images)")
     
-    api_key = st.text_input("Gemini API Key", type="password", help="Enter your Gemini API key")
+    api_key_input = st.text_input("Gemini API Key", value=DEFAULT_API_KEY, type="password", help="Default key loaded automatically.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -99,7 +104,8 @@ with tab1:
     uploaded_file = st.file_uploader("Upload Homework File (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
     
     if st.button("🚀 Submit Homework to Teacher", type="primary"):
-        if not api_key:
+        active_key = api_key_input if api_key_input.strip() else DEFAULT_API_KEY
+        if not active_key:
             st.error("❌ Please enter your Gemini API Key.")
         elif not student_name or not assignment_title:
             st.error("❌ Please enter student name and assignment title.")
@@ -114,7 +120,7 @@ with tab1:
                 try:
                     # AI Processing
                     ai_draft = analyze_homework(
-                        api_key, file_bytes, mime_type, file_name, 
+                        active_key, file_bytes, mime_type, file_name, 
                         student_name, assignment_title, instructions
                     )
                     
@@ -219,4 +225,5 @@ with tab3:
             st.info("🎉 No pending submissions to review!")
     elif pin != "":
         st.error("🔒 Incorrect PIN!")
+ 
              
