@@ -1,495 +1,223 @@
 import streamlit as st
 import sqlite3
 import datetime
-import base64
-import os
-import io
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
-# ==========================================
-# 1. STREAMLIT PAGE CONFIG & CUSTOM STYLING
-# ==========================================
+# ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
     page_title="IGCSE Biology Assessment Portal",
     page_icon="🧬",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Custom CSS for Cambridge/Academic aesthetic
-st.markdown("""
-<style>
-    .stApp {
-        background-color: #f8f9fa;
-    }
-    h1, h2, h3 {
-        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-        color: #1a365d;
-    }
-    .badge-pending {
-        background-color: #fef3c7;
-        color: #92400e;
-        padding: 4px 12px;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 0.85rem;
-    }
-    .badge-approved {
-        background-color: #d1fae5;
-        color: #065f46;
-        padding: 4px 12px;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 0.85rem;
-    }
-    .metric-card {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 16px;
-        text-align: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
-    .metric-card h3 {
-        margin: 0;
-        font-size: 2rem;
-        color: #0d9488;
-    }
-    .metric-card p {
-        margin: 4px 0 0 0;
-        color: #64748b;
-        font-size: 0.9rem;
-    }
-    .report-box {
-        background-color: #ffffff;
-        border: 1px solid #cbd5e1;
-        border-left: 5px solid #0284c7;
-        padding: 20px;
-        border-radius: 6px;
-        margin-top: 10px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
-# ==========================================
-# 2. DATABASE MANAGEMENT (SQLite)
-# ==========================================
+# SQLite Database Setup
 DB_FILE = "homework_portal.db"
 
-def get_db_connection():
-    """Returns a thread-safe connection to the SQLite database."""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def init_db():
-    """Initializes SQLite database and creates submissions table if not present."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            student_name TEXT NOT NULL,
-            assignment_title TEXT NOT NULL,
-            teacher_instructions TEXT,
-            file_bytes BLOB NOT NULL,
-            file_name TEXT NOT NULL,
-            mime_type TEXT NOT NULL,
-            ai_draft_report TEXT NOT NULL,
-            final_report TEXT DEFAULT '',
-            status TEXT DEFAULT 'PENDING',
-            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            student_name TEXT,
+            assignment_title TEXT,
+            file_bytes BLOB,
+            file_name TEXT,
+            mime_type TEXT,
+            ai_draft TEXT,
+            final_report TEXT,
+            status TEXT,
+            submitted_at TEXT
         )
-    """)
+    ''')
     conn.commit()
     conn.close()
 
-# Initialize DB on load
 init_db()
 
-def save_submission(student_name, assignment_title, teacher_instructions, file_bytes, file_name, mime_type, ai_draft_report):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO submissions (student_name, assignment_title, teacher_instructions, file_bytes, file_name, mime_type, ai_draft_report, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
-    """, (student_name, assignment_title, teacher_instructions, sqlite3.Binary(file_bytes), file_name, mime_type, ai_draft_report))
-    conn.commit()
-    sub_id = cursor.lastrowid
-    conn.close()
-    return sub_id
-
-def get_pending_submissions():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, student_name, assignment_title, teacher_instructions, file_name, mime_type, ai_draft_report, submitted_at
-        FROM submissions 
-        WHERE status = 'PENDING' 
-        ORDER BY submitted_at DESC
-    """)
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
-
-def get_submission_by_id(sub_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM submissions WHERE id = ?", (sub_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row
-
-def update_submission_approval(sub_id, final_report):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE submissions 
-        SET final_report = ?, status = 'APPROVED' 
-        WHERE id = ?
-    """, (final_report, sub_id))
-    conn.commit()
-    conn.close()
-
-def search_approved_submissions(student_name):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, student_name, assignment_title, final_report, submitted_at
-        FROM submissions 
-        WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
-        ORDER BY submitted_at DESC
-    """, (student_name.strip(),))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
-
-def get_portal_stats():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM submissions WHERE status = 'PENDING'")
-    pending = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM submissions WHERE status = 'APPROVED'")
-    approved = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM submissions")
-    total = cursor.fetchone()[0]
-    conn.close()
-    return pending, approved, total
-
-
-# ==========================================
-# 3. GEMINI AI STRICT MARK SCHEME ENGINE
-# ==========================================
-def get_gemini_api_key():
-    """Retrieves API key from Streamlit secrets or sidebar input fallback."""
-    if "GEMINI_API_KEY" in st.secrets:
-        return st.secrets["GEMINI_API_KEY"]
-    elif "gemini_api_key" in st.session_state:
-        return st.session_state["gemini_api_key"]
-    return None
-
-def evaluate_submission_with_gemini(api_key, student_name, assignment_title, teacher_instructions, file_bytes, mime_type):
-    """
-    Evaluates student homework using Gemini 1.5 Flash strictly enforcing Cambridge Mark Schemes.
-    """
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-
-    system_prompt = f"""
-You are acting strictly as an official Senior Chief Examiner for Cambridge IGCSE Biology (Syllabus 0610 / 0970).
-Your core instruction is to evaluate the uploaded submission STRICTLY according to official Cambridge Mark Scheme principles.
-
-### ASSIGNMENT CONTEXT:
-- **Student Name:** {student_name}
-- **Assignment Title:** {assignment_title}
-- **Teacher Focus & Specific Mark Scheme Criteria:** 
-  {teacher_instructions}
-
-### RIGID CAMBRIDGE MARKING CONVENTIONS TO ENFORCE:
-1. **Strict Key Terms Only:** 
-   - Award marks ONLY if exact biological terminology is present (e.g., "denature" instead of "destroy/die", "turgid/flaccid" instead of "swollen/shrunk", "active site" instead of "hole/slot", "transpiration stream" instead of "water movement").
-   - Reject vague everyday language.
-
-2. **Cambridge Standard Symbols & Rules:**
-   - `;` separates independent marking points.
-   - `/` indicates acceptable alternative responses for the same marking point.
-   - **R (Reject):** Deduct or refuse credit for scientifically inaccurate terms or direct contradictions.
-   - **I (Ignore):** Ignore neutral non-contradictory statements.
-   - **ecf (Error Carried Forward):** Allow full credit for correct biological steps following a previous calculation/measurement error.
-
-3. **Assessment Objectives Weighting:**
-   - **AO1 (Knowledge & Understanding):** Require exact definitions and scientific facts.
-   - **AO2 (Handling Information & Problem Solving):** Check numerical calculations (e.g., magnification $M = I / A$), correct units, and data/graph interpretation.
-   - **AO3 (Experimental & Practical):** Verify independent/dependent/controlled variables, safety precautions, and precise sources of error.
-
-### REQUIRED EVALUATION REPORT FORMAT:
-
-# 🧬 IGCSE Biology Strict Cambridge Assessment
-
-### 📊 Raw Marks & Estimated Grade
-- **Raw Score:** [Allocated Marks / Total Available Marks]
-- **Estimated Grade:** [e.g., A* (9), A (8), B (7), C (5)]
-
-### ❌ Strict Mark Scheme Deductions (Where marks were missed)
-- List each question or response where credit was refused or lost.
-- **Student Written Answer vs Required Mark Scheme Phrase** (Highlight missing key terms).
-
-### 🛠️ Examiner Guidance & Corrective Terms
-- Provide exact Cambridge phrasing required to gain full marks if re-examined.
-
-### 📝 Question-by-Question Detailed Breakdown
-- Detail awarded points `;` and rejected points `R` using official mark scheme shorthand.
----
-"""
-
-    file_part = {
-        "mime_type": mime_type,
-        "data": file_bytes
-    }
-
-    response = model.generate_content([system_prompt, file_part])
-    return response.text
-
-
-# ==========================================
-# 4. MAIN APP INTERFACE
-# ==========================================
-st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
-st.caption("AI-Powered Cambridge IGCSE (0610/0970) Evaluation & Teacher Moderation Engine")
-
-# Sidebar Configuration
-with st.sidebar:
-    st.header("⚙️ Portal Settings")
-    api_key = get_gemini_api_key()
+# ==================== HELPER FUNCTIONS (GEMINI SDK) ====================
+def analyze_homework_gemini(file_bytes, mime_type, student_name, assignment_title, instructions):
+    # Retrieve API key safely from Streamlit Secrets
+    api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
     if not api_key:
-        st.warning("⚠️ Gemini API Key missing from `secrets.toml`.")
-        user_key = st.text_input("Enter Gemini API Key:", type="password")
-        if user_key:
-            st.session_state["gemini_api_key"] = user_key
-            st.success("API Key saved for current session!")
-            st.rerun()
-    else:
-        st.success("🔑 Gemini API Key Active")
+        raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
 
-    st.divider()
-    st.markdown("### 📌 Cambridge Syllabus")
-    st.info("**Syllabus Code:** 0610 / 0970\n\n**Mode:** Strict Mark Scheme Only\n\n**Engine:** Gemini 1.5 Flash")
+    # Initialize Gemini client using the official google-genai SDK
+    client = genai.Client(api_key=api_key)
 
+    prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
+Evaluate the student answer sheet submission.
+Student Name: {student_name}
+Assignment: {assignment_title}
+Teacher Focus/Instructions: {instructions}
 
-# Navigation Tabs
+Provide a comprehensive diagnostic evaluation report in Markdown format:
+1. Executive Summary & Estimated Raw Score / Grade Equivalent.
+2. Strengths (AO1 Knowledge, AO2 Application, AO3 Practical).
+3. Specific Misconceptions & Missing Cambridge Mark Scheme Keywords.
+4. Actionable Next Steps for Improvement.
+"""
+
+    # Pass the heavy PDF/Image binary bytes directly to Gemini
+    part_file = types.Part.from_bytes(
+        data=file_bytes,
+        mime_type=mime_type if mime_type else "application/pdf",
+    )
+
+    # Generate response using gemini-2.5-flash
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[prompt_text, part_file]
+    )
+    return response.text
+
+# ==================== MAIN UI ====================
+st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
+
 tab1, tab2, tab3 = st.tabs([
-    "📤 Submit Homework", 
-    "📊 Student Results", 
-    "🔒 Teacher Dashboard"
+    "📤 Student Portal (Submit Homework)", 
+    "📊 Student Results (Approved Reports)", 
+    "🔒 Teacher Dashboard (Review & Release)"
 ])
 
-# ------------------------------------------
-# TAB 1: STUDENT SUBMISSION PORTAL
-# ------------------------------------------
+# -------------------- TAB 1: STUDENT SUBMIT --------------------
 with tab1:
-    st.subheader("Submit Your Biology Homework")
-    st.write("Upload your handwritten or typed homework (PDF or Images) for evaluation against Cambridge Mark Schemes.")
-
-    with st.form("submission_form", clear_on_submit=False):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            student_name = st.text_input("Student Full Name *", placeholder="e.g. Sarah Ahmed")
-        with col_b:
-            assignment_title = st.text_input("Assignment Title *", placeholder="e.g. Enzymes & Rates of Reaction Worksheet")
-
-        teacher_instructions = st.text_area(
-            "Teacher Mark Scheme Focus / Key Topics (Optional)",
-            value="Enforce strict 0610 mark scheme guidelines on active site specificity, denaturation mechanisms, optimum pH/temperature graphs, and collision theory.",
-            height=100,
-            help="Provide syllabus guidelines or specific criteria for the AI examiner to focus on."
-        )
-
-        uploaded_file = st.file_uploader(
-            "Upload Submission (PDF, PNG, JPG, JPEG) *",
-            type=["pdf", "png", "jpg", "jpeg"],
-            help="Heavy PDFs and images are processed directly from memory."
-        )
-
-        submit_btn = st.form_submit_button("🚀 Submit Homework for Marking", use_container_width=True)
-
-    if submit_btn:
-        active_key = get_gemini_api_key()
-        if not active_key:
-            st.error("Please configure your Gemini API Key in the sidebar or `.streamlit/secrets.toml` to submit.")
-        elif not student_name.strip():
-            st.error("Please enter your Student Name.")
-        elif not assignment_title.strip():
-            st.error("Please enter the Assignment Title.")
-        elif uploaded_file is None:
-            st.error("Please upload your homework file (PDF or Image).")
-        else:
-            try:
-                with st.spinner("🤖 Chief Examiner AI is applying Cambridge Mark Scheme rules to your submission..."):
-                    file_bytes = uploaded_file.read()
-                    mime_type = uploaded_file.type
-                    file_name = uploaded_file.name
-
-                    if mime_type == "image/jpg":
-                        mime_type = "image/jpeg"
-
-                    ai_draft = evaluate_submission_with_gemini(
-                        api_key=active_key,
-                        student_name=student_name,
-                        assignment_title=assignment_title,
-                        teacher_instructions=teacher_instructions,
-                        file_bytes=file_bytes,
-                        mime_type=mime_type
-                    )
-
-                    sub_id = save_submission(
-                        student_name=student_name,
-                        assignment_title=assignment_title,
-                        teacher_instructions=teacher_instructions,
-                        file_bytes=file_bytes,
-                        file_name=file_name,
-                        mime_type=mime_type,
-                        ai_draft_report=ai_draft
-                    )
-
-                    st.balloons()
-                    st.success(f"🎉 Homework successfully submitted! Reference ID: #{sub_id}")
-                    st.info("📌 Status: **PENDING TEACHER REVIEW**. Once your teacher reviews and approves the report, you can view it under the **'Student Results'** tab.")
-                    
-                    with st.expander("🔍 Preview Draft AI Evaluation (Pending Review)"):
-                        st.markdown(ai_draft)
-
-            except Exception as e:
-                st.error(f"Error evaluating submission: {str(e)}")
-
-
-# ------------------------------------------
-# TAB 2: STUDENT RESULTS LOOKUP
-# ------------------------------------------
-with tab2:
-    st.subheader("Lookup Released Assessment Reports")
-    st.write("Enter your full name to view teacher-approved evaluation reports.")
-
-    search_name = st.text_input("Enter Student Name to Search:", placeholder="e.g. Sarah Ahmed")
+    st.header("Upload Homework (PDF or Images)")
     
-    if search_name.strip():
-        results = search_approved_submissions(search_name)
-        if results:
-            st.success(f"Found {len(results)} approved report(s) for '{search_name}'")
-            for row in results:
-                with st.expander(f"📖 {row['assignment_title']} (Submitted: {row['submitted_at']})", expanded=True):
-                    st.markdown(f"<div class='report-box'>{row['final_report']}</div>", unsafe_allow_html=True)
-                    st.download_button(
-                        label="📥 Download Report (.md)",
-                        data=row['final_report'],
-                        file_name=f"{row['student_name']}_{row['assignment_title']}_Report.md",
-                        mime="text/markdown",
-                        key=f"dl_{row['id']}"
-                    )
+    col1, col2 = st.columns(2)
+    with col1:
+        student_name = st.text_input("Student Name", placeholder="e.g., Omar")
+    with col2:
+        assignment_title = st.text_input("Assignment Title", placeholder="e.g., Cell Structure & Osmosis Quiz")
+        
+    instructions = st.text_area(
+        "Teacher Instructions / Mark Scheme Focus", 
+        value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas)."
+    )
+    
+    uploaded_file = st.file_uploader("Upload Homework File (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
+    
+    if st.button("🚀 Submit Homework to Teacher", type="primary"):
+        if not student_name or not assignment_title:
+            st.error("❌ Please enter student name and assignment title.")
+        elif not uploaded_file:
+            st.error("❌ Please upload a homework file.")
         else:
-            st.info(f"No approved reports found for '{search_name}'. If you submitted recently, your teacher may still be reviewing your work.")
-
-
-# ------------------------------------------
-# TAB 3: TEACHER REVIEW DASHBOARD
-# ------------------------------------------
-with tab3:
-    st.subheader("Teacher Moderation & Approval Dashboard")
-
-    if "teacher_authenticated" not in st.session_state:
-        st.session_state["teacher_authenticated"] = False
-
-    if not st.session_state["teacher_authenticated"]:
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            passcode = st.text_input("Enter Teacher Passcode / PIN:", type="password", key="pin_input")
-            if st.button("Unlock Dashboard", use_container_width=True):
-                if passcode == "1234":
-                    st.session_state["teacher_authenticated"] = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect Passcode. Default PIN is '1234'.")
-    else:
-        top_col1, top_col2 = st.columns([3, 1])
-        with top_col1:
-            st.write("Welcome, **Cambridge Biology Moderator**. Review, edit, and release reports below.")
-        with top_col2:
-            if st.button("🔒 Lock Dashboard"):
-                st.session_state["teacher_authenticated"] = False
-                st.rerun()
-
-        st.divider()
-
-        pending_cnt, approved_cnt, total_cnt = get_portal_stats()
-        m_col1, m_col2, m_col3 = st.columns(3)
-        with m_col1:
-            st.markdown(f"<div class='metric-card'><h3>{pending_cnt}</h3><p>Pending Review</p></div>", unsafe_allow_html=True)
-        with m_col2:
-            st.markdown(f"<div class='metric-card'><h3>{approved_cnt}</h3><p>Approved Reports</p></div>", unsafe_allow_html=True)
-        with m_col3:
-            st.markdown(f"<div class='metric-card'><h3>{total_cnt}</h3><p>Total Submissions</p></div>", unsafe_allow_html=True)
-
-        st.write("")
-        st.subheader("Pending Submissions")
-
-        pending_items = get_pending_submissions()
-        if not pending_items:
-            st.success("✨ All caught up! No pending submissions to review.")
-        else:
-            options = {f"#{item['id']} - {item['student_name']} ({item['assignment_title']})": item['id'] for item in pending_items}
-            selected_label = st.selectbox("Select Submission to Evaluate:", list(options.keys()))
-            selected_id = options[selected_label]
-
-            sub_data = get_submission_by_id(selected_id)
-
-            st.markdown("---")
-            
-            left_col, right_col = st.columns([1, 1])
-
-            with left_col:
-                st.markdown("### 📄 Student Submitted Work")
-                st.write(f"**Student:** {sub_data['student_name']}")
-                st.write(f"**Assignment:** {sub_data['assignment_title']}")
-                st.write(f"**Submitted:** {sub_data['submitted_at']}")
-                st.write(f"**File Name:** `{sub_data['file_name']}`")
+            with st.spinner("Analyzing heavy PDF/image with Gemini AI and submitting to teacher..."):
+                file_bytes = uploaded_file.read()
+                mime_type = uploaded_file.type
+                file_name = uploaded_file.name
                 
-                if sub_data['teacher_instructions']:
-                    with st.expander("Teacher Instructions / Key Topics Focus"):
-                        st.write(sub_data['teacher_instructions'])
-
-                file_b = sub_data['file_bytes']
-                mtype = sub_data['mime_type']
-
-                if mtype.startswith("image/"):
-                    st.image(file_b, caption=f"Submitted Image: {sub_data['file_name']}", use_column_width=True)
-                elif mtype == "application/pdf":
-                    st.info("📄 PDF File Uploaded.")
-                    st.download_button(
-                        label="⬇️️ Download PDF Submission",
-                        data=file_b,
-                        file_name=sub_data['file_name'],
-                        mime="application/pdf",
-                        use_container_width=True
+                try:
+                    # AI Processing via Gemini
+                    ai_draft = analyze_homework_gemini(
+                        file_bytes, mime_type, 
+                        student_name, assignment_title, instructions
                     )
-                    base64_pdf = base64.b64encode(file_b).decode('utf-8')
-                    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500" type="application/pdf"></iframe>'
-                    st.markdown(pdf_display, unsafe_allow_html=True)
+                    
+                    # Save to DB as PENDING
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    conn = sqlite3.connect(DB_FILE)
+                    c = conn.cursor()
+                    c.execute('''
+                        INSERT INTO submissions 
+                        (student_name, assignment_title, file_bytes, file_name, mime_type, ai_draft, final_report, status, submitted_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                    ''', (student_name, assignment_title, file_bytes, file_name, mime_type, ai_draft, "", now))
+                    conn.commit()
+                    conn.close()
+                    
+                    st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. Results will be visible once approved.")
+                except Exception as e:
+                    st.error(f"⚠️ Error processing file: {e}")
 
-            with right_col:
-                st.markdown("### 📝 Edit & Approve Assessment Report")
-                st.caption("Modify the strict mark scheme draft feedback below before releasing it to the student.")
+# -------------------- TAB 2: STUDENT LOOKUP --------------------
+with tab2:
+    st.header("Check Approved Homework Reports")
+    search_name = st.text_input("Enter Student Name to view approved results")
+    
+    if st.button("🔍 Search Reports"):
+        if search_name.strip():
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute('''
+                SELECT assignment_title, final_report, submitted_at 
+                FROM submissions 
+                WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
+                ORDER BY id DESC
+            ''', (search_name.strip(),))
+            results = c.fetchall()
+            conn.close()
+            
+            if results:
+                for row in results:
+                    st.subheader(f"📚 {row[0]} (Approved Date: {row[2]})")
+                    st.markdown(row[1])
+                    st.divider()
+            else:
+                st.info("ℹ️ No approved reports found for this name yet. If you submitted recently, your teacher is still reviewing it.")
 
-                edited_report = st.text_area(
-                    "Final Report Editor (Markdown Supported):",
-                    value=sub_data['ai_draft_report'],
-                    height=500
-                )
-
-                if st.button("✅ Approve & Release to Student", type="primary", use_container_width=True):
-                    update_submission_approval(selected_id, edited_report)
-                    st.success(f"Report for submission #{selected_id} approved and released successfully!")
+# -------------------- TAB 3: TEACHER DASHBOARD --------------------
+with tab3:
+    st.header("Teacher Review Dashboard")
+    
+    pin = st.text_input("Teacher Passcode (PIN)", type="password")
+    TEACHER_PIN = "1234"
+    
+    if pin == TEACHER_PIN:
+        st.success("🔓 Access Granted")
+        
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, ai_draft, submitted_at, file_bytes FROM submissions WHERE status = 'PENDING'")
+        pending = c.fetchall()
+        conn.close()
+        
+        if pending:
+            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[6]})": row for row in pending}
+            selected_option = st.selectbox("Select Pending Submission:", list(options.keys()))
+            
+            selected_row = options[selected_option]
+            sub_id, s_name, a_title, f_name, m_type, ai_draft, sub_time, f_bytes = selected_row
+            
+            st.divider()
+            col_file, col_edit = st.columns([1, 1])
+            
+            with col_file:
+                st.subheader("📄 Uploaded Student File")
+                if "image" in m_type:
+                    st.image(f_bytes)
+                else:
+                    st.download_button(
+                        label=f"⬇️ Download Student PDF ({f_name})",
+                        data=f_bytes,
+                        file_name=f_name,
+                        mime=m_type
+                    )
+            
+            with col_edit:
+                st.subheader("✏️ AI Draft Evaluation (Teacher Edit)")
+                final_report_input = st.text_area("Review and edit evaluation before releasing to student:", value=ai_draft, height=400)
+                
+                if st.button("✅ Approve & Release Report to Student", type="primary"):
+                    conn = sqlite3.connect(DB_FILE)
+                    c = conn.cursor()
+                    c.execute('''
+                        UPDATE submissions 
+                        SET final_report = ?, status = 'APPROVED' 
+                        WHERE id = ?
+                    ''', (final_report_input, sub_id))
+                    conn.commit()
+                    conn.close()
+                    st.balloons()
+                    st.success("🎉 Report approved and released to student!")
                     st.rerun()
+        else:
+            st.info("🎉 No pending submissions to review!")
+    elif pin != "":
+        st.error("🔒 Incorrect PIN!")
        
  
              
