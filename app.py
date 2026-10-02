@@ -1,7 +1,6 @@
 import streamlit as st
 import sqlite3
 import datetime
-import pypdf
 import io
 import google.generativeai as genai
 
@@ -62,14 +61,12 @@ Carefully inspect the handwritten answers, text, or diagrams in the attached doc
 4. **Actionable Next Steps for Improvement** (Precise guidance for the student to achieve an A*).
 """
 
-    # إرسال الملف مباشرة كجزء بصري أو ثنائي ليعمل Gemini على تحليله وقراءته بشكل حقيقي
     if mime_type and "image" in mime_type:
         file_part = {
             "mime_type": mime_type,
             "data": file_bytes
         }
     else:
-        # إذا كان PDF نرسله كملف ثنائي ليقوم النموذج بقراءته وفحصه بصرياً
         file_part = {
             "mime_type": "application/pdf",
             "data": file_bytes
@@ -119,7 +116,6 @@ with tab1:
                 mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
                 
                 try:
-                    # توليد تقييم حقيقي يعتمد على قراءة الملف
                     ai_draft = analyze_homework_gemini(
                         student_name, assignment_title, instructions, file_bytes, mime_type, file_name
                     )
@@ -231,19 +227,32 @@ with tab3:
                 st.subheader("✏️ AI Draft Evaluation (Teacher Editing)")
                 final_report_input = st.text_area("Review and refine the AI diagnostic report before release:", value=ai_draft, height=450)
                 
-                if st.button("✅ Approve & Publish Report to Student", type="primary"):
-                    conn = sqlite3.connect(DB_FILE)
-                    c = conn.cursor()
-                    c.execute('''
-                        UPDATE submissions 
-                        SET final_report = ?, status = 'APPROVED' 
-                        WHERE id = ?
-                    ''', (final_report_input, sub_id))
-                    conn.commit()
-                    conn.close()
-                    st.balloons()
-                    st.success("🎉 Report approved and successfully released to the student portal!")
-                    st.rerun()
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("✅ Approve & Publish Report to Student", type="primary"):
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute('''
+                            UPDATE submissions 
+                            SET final_report = ?, status = 'APPROVED' 
+                            WHERE id = ?
+                        ''', (final_report_input, sub_id))
+                        conn.commit()
+                        conn.close()
+                        st.balloons()
+                        st.success("🎉 Report approved and successfully released to the student portal!")
+                        st.rerun()
+                
+                with col_btn2:
+                    # زر حذف التسليم المباشر
+                    if st.button("🗑️ Delete Submission", type="secondary"):
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute("DELETE FROM submissions WHERE id = ?", (sub_id,))
+                        conn.commit()
+                        conn.close()
+                        st.warning("⚠️ Submission deleted successfully!")
+                        st.rerun()
         else:
             st.info("🎉 All caught up! No pending student submissions to review.")
     elif pin != "":
