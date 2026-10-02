@@ -7,12 +7,12 @@ import google.generativeai as genai
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
-    page_title="IGCSE Biology Assessment & Teacher Portal",
+    page_title="IGCSE Biology Assessment Portal",
     page_icon="🧬",
     layout="wide"
 )
 
-# SQLite Database Setup (تحديث الإصدار لإنشاء الجدول بالأعمدة الجديدة كلياً)
+# SQLite Database Setup
 DB_FILE = "homework_portal_v3.db"
 
 def init_db():
@@ -37,20 +37,7 @@ def init_db():
 
 init_db()
 
-# ==================== HELPER: EXTRACT TEXT FROM PDF ====================
-def extract_text_from_pdf(file_bytes):
-    try:
-        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-        text = ""
-        for page in reader.pages:
-            extracted = page.extract_text()
-            if extracted:
-                text += extracted + "\n"
-        return text if text.strip() else ""
-    except Exception as e:
-        return ""
-
-# ==================== HELPER: GEMINI AI ANALYSIS ====================
+# ==================== HELPER: GEMINI AI VISION ANALYSIS ====================
 def analyze_homework_gemini(student_name, assignment_title, instructions, file_bytes, mime_type, file_name):
     api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
@@ -63,39 +50,32 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, file_b
     model = genai.GenerativeModel("gemini-3.8-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-Evaluate the student's submitted homework assignment (attached as file/image or PDF).
-Student Name: {student_name}
+You are evaluating a student's actual homework submission attached as an image, scan, or PDF.
+Candidate Name: {student_name}
 Assignment: {assignment_title}
-Teacher Focus/Instructions: {instructions}
+Teacher Focus & Instructions: {instructions}
 
-Provide a comprehensive diagnostic evaluation report in Markdown format:
-1. Executive Summary & Estimated Raw Score / Grade Equivalent (out of total marks).
-2. Strengths (AO1 Knowledge, AO2 Application, AO3 Practical).
-3. Specific Misconceptions & Missing Cambridge Mark Scheme Keywords.
-4. Actionable Next Steps for Improvement.
+Carefully inspect the handwritten answers, text, or diagrams in the attached document. Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format:
+1. **Executive Summary & Estimated Raw Score / Grade Equivalent** (Provide a realistic estimated score out of total marks based on what is written).
+2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment** (Analyze what the student wrote, pointing out exact correct keywords used vs. missing Cambridge mark scheme keywords).
+3. **Specific Misconceptions & Errors** (Correct any biological inaccuracies, e.g., water potential vs water concentration, chloroplast vs chlorophyll).
+4. **Actionable Next Steps for Improvement** (Precise guidance for the student to achieve an A*).
 """
 
-    # إذا كان الملف صورة (JPG, JPEG, PNG)، Gemini يقرأ الصورة بذكاء بصري كامل
+    # إرسال الملف مباشرة كجزء بصري أو ثنائي ليعمل Gemini على تحليله وقراءته بشكل حقيقي
     if mime_type and "image" in mime_type:
-        image_part = {
+        file_part = {
             "mime_type": mime_type,
             "data": file_bytes
         }
-        response = model.generate_content([prompt_text, image_part])
     else:
-        # إذا كان PDF، نحاول استخراج النص أولاً
-        extracted_text = extract_text_from_pdf(file_bytes)
-        if not extracted_text.strip():
-            # إذا كان الـ PDF عبارة عن صور ممسوحة ضوئياً، نرسله كملف ثنائي ليدعمه جيميناي
-            pdf_part = {
-                "mime_type": "application/pdf",
-                "data": file_bytes
-            }
-            response = model.generate_content([prompt_text + f"\n[Note: PDF file uploaded: {file_name}]", pdf_part])
-        else:
-            full_prompt = f"{prompt_text}\n\nStudent Homework Extracted Text:\n{extracted_text}"
-            response = model.generate_content(full_prompt)
-            
+        # إذا كان PDF نرسله كملف ثنائي ليقوم النموذج بقراءته وفحصه بصرياً
+        file_part = {
+            "mime_type": "application/pdf",
+            "data": file_bytes
+        }
+
+    response = model.generate_content([prompt_text, file_part])
     return response.text
 
 # ==================== MAIN UI ====================
@@ -113,16 +93,15 @@ with tab1:
     
     col1, col2 = st.columns(2)
     with col1:
-        student_name = st.text_input("Student Name", placeholder="e.g., Omar Mohamed")
+        student_name = st.text_input("Student Name", placeholder="e.g., Lara")
     with col2:
-        assignment_title = st.text_input("Assignment Title", placeholder="e.g., Paper 2 - Core Theory Quiz")
+        assignment_title = st.text_input("Assignment Title", placeholder="e.g., hw")
         
     instructions = st.text_area(
         "Teacher Instructions / Mark Scheme Focus", 
         value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas, active transport)."
     )
     
-    # يدعم الصيغ الثلاث معاً
     uploaded_file = st.file_uploader(
         "Upload Homework File (Accepted formats: PDF, PNG, JPG, JPEG)", 
         type=["pdf", "png", "jpg", "jpeg"]
@@ -134,13 +113,13 @@ with tab1:
         elif not uploaded_file:
             st.error("❌ Please upload a homework file.")
         else:
-            with st.spinner("Processing file, analyzing with Gemini AI, and submitting..."):
+            with st.spinner("Analyzing student work with Gemini AI vision and submitting..."):
                 file_bytes = uploaded_file.read()
                 file_name = uploaded_file.name
                 mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
                 
                 try:
-                    # Generate AI analysis
+                    # توليد تقييم حقيقي يعتمد على قراءة الملف
                     ai_draft = analyze_homework_gemini(
                         student_name, assignment_title, instructions, file_bytes, mime_type, file_name
                     )
@@ -156,7 +135,7 @@ with tab1:
                     conn.commit()
                     conn.close()
                     
-                    st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. You can check your status in the 'Student Results' tab.")
+                    st.success(f"✅ Submission successful, {student_name}! Your homework has been evaluated by AI and sent to the teacher for review.")
                 except Exception as e:
                     st.error(f"⚠️ Error during AI processing: {e}")
 
@@ -207,7 +186,6 @@ with tab3:
     if pin == TEACHER_PIN:
         st.success("🔓 Access Granted")
         
-        # Dashboard Quick Metrics
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM submissions WHERE status = 'PENDING'")
@@ -270,7 +248,6 @@ with tab3:
             st.info("🎉 All caught up! No pending student submissions to review.")
     elif pin != "":
         st.error("🔒 Incorrect PIN!")
-      
        
  
              
