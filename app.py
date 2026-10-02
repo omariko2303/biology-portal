@@ -1,10 +1,7 @@
 import streamlit as st
 import sqlite3
 import datetime
-import os
-import base64
-import requests
-import io
+import google.generativeai as genai
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
@@ -38,59 +35,16 @@ def init_db():
 
 init_db()
 
-# ==================== HELPER FUNCTIONS (GROQ DYNAMIC API) ====================
-def extract_pdf_text(file_bytes):
-    """Extract text safely from PDF bytes"""
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-        text = ""
-        for page in reader.pages:
-            t = page.extract_text()
-            if t:
-                text += t + "\n"
-        return text if text.strip() else "PDF contains scanned images or handwritten work."
-    except Exception:
-        try:
-            return file_bytes.decode('utf-8', errors='ignore')[:3000]
-        except:
-            return "PDF file submitted."
-
-def get_best_groq_model(headers, is_vision=False):
-    """Fetch available models dynamically from Groq account"""
-    try:
-        res = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=5)
-        if res.status_code == 200:
-            models_data = res.json().get("data", [])
-            model_ids = [m["id"] for m in models_data]
-            
-            if is_vision:
-                vision_models = [m for m in model_ids if "vision" in m or "ma-3.2" in m]
-                if vision_models:
-                    return vision_models[0]
-            
-            text_models = [m for m in model_ids if "llama" in m and "vision" not in m]
-            if text_models:
-                return text_models[0]
-            
-            if model_ids:
-                return model_ids[0]
-    except Exception:
-        pass
-    
-    return "llama-3.2-11b-vision-preview" if is_vision else "llama-3.1-8b-instant"
-
-def analyze_homework_groq(file_bytes, mime_type, student_name, assignment_title, instructions):
-    raw_key = st.secrets.get("GROQ_API_KEY", "")
+# ==================== HELPER FUNCTIONS (GEMINI API) ====================
+def analyze_homework_gemini(file_bytes, mime_type, student_name, assignment_title, instructions):
+    raw_key = st.secrets.get("GEMINI_API_KEY", "")
     api_key = raw_key.strip().strip('"').strip("'")
     
     if not api_key:
-        raise Exception("GROQ_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
+        raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Evaluate the student answer sheet submission.
@@ -98,59 +52,20 @@ Student Name: {student_name}
 Assignment: {assignment_title}
 Teacher Focus/Instructions: {instructions}
 
-Provide a detailed diagnostic evaluation report in Markdown format:
+Provide a comprehensive diagnostic evaluation report in Markdown format:
 1. Executive Summary & Estimated Raw Score / Grade Equivalent.
 2. Strengths (AO1 Knowledge, AO2 Application, AO3 Practical).
 3. Specific Misconceptions & Missing Cambridge Mark Scheme Keywords.
 4. Actionable Next Steps for Improvement.
 """
 
-    is_image = "image" in mime_type
-    selected_model = get_best_groq_model(headers, is_vision=is_image)
+    file_part = {
+        "mime_type": mime_type if mime_type else "application/pdf",
+        "data": file_bytes
+    }
 
-    if is_image:
-        base64_image = base64.b64encode(file_bytes).decode('utf-8')
-        payload = {
-            "model": selected_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt_text},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            "temperature": 0.2
-        }
-    else:
-        extracted_text = extract_pdf_text(file_bytes)
-        payload = {
-            "model": selected_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"{prompt_text}\n\nStudent Work Text Content:\n{extracted_text[:4000]}"
-                }
-            ],
-            "temperature": 0.2
-        }
-
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    res_json = response.json()
-
-    if response.status_code == 200:
-        return res_json['choices'][0]['message']['content']
-    elif response.status_code == 401:
-        raise Exception("Invalid Groq API Key! Please double-check your key in Streamlit Secrets.")
-    else:
-        error_msg = res_json.get('error', {}).get('message', response.text)
-        raise Exception(f"Groq API Error: {error_msg}")
+    response = model.generate_content([prompt_text, file_part])
+    return response.text
 
 # ==================== MAIN UI ====================
 st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
@@ -184,19 +99,17 @@ with tab1:
         elif not uploaded_file:
             st.error("❌ Please upload a homework file.")
         else:
-            with st.spinner("Analyzing homework with AI and submitting to teacher..."):
+            with st.spinner("Analyzing homework with Gemini AI and submitting to teacher..."):
                 file_bytes = uploaded_file.read()
                 mime_type = uploaded_file.type
                 file_name = uploaded_file.name
                 
                 try:
-                    # AI Processing via Dynamic Groq Fetch
-                    ai_draft = analyze_homework_groq(
+                    ai_draft = analyze_homework_gemini(
                         file_bytes, mime_type, 
                         student_name, assignment_title, instructions
                     )
                     
-                    # Save to DB as PENDING
                     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     conn = sqlite3.connect(DB_FILE)
                     c = conn.cursor()
@@ -277,7 +190,7 @@ with tab3:
                     )
             
             with col_edit:
-                st.subheader("✏️ AI Draft Evaluation (Teacher Edit)")
+                st.subheader("✏️️ AI Draft Evaluation (Teacher Edit)")
                 final_report_input = st.text_area("Review and edit evaluation before releasing to student:", value=ai_draft, height=400)
                 
                 if st.button("✅ Approve & Release Report to Student", type="primary"):
