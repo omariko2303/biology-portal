@@ -38,7 +38,7 @@ def init_db():
 init_db()
 
 # Default API Key
-DEFAULT_API_KEY = "AQ.Ab8RN6LNGTlgKiUAR4rD6barZZFoo6vkNMBBWyrXeE8jWKYmjA"
+DEFAULT_API_KEY = ""
 
 # ==================== HELPER FUNCTIONS ====================
 def analyze_homework(api_key, file_bytes, mime_type, file_name, student_name, assignment_title, instructions):
