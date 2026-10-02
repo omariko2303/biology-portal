@@ -60,7 +60,7 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, homewo
     genai.configure(api_key=api_key)
     
     # استخدام النموذج المعتمد
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-3.8-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Evaluate the student's submitted homework text extracted from their PDF file.
