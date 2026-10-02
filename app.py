@@ -49,7 +49,7 @@ def extract_pdf_text(file_bytes):
             t = page.extract_text()
             if t:
                 text += t + "\n"
-        return text if text.strip() else "PDF contains scanned images/handwritten work."
+        return text if text.strip() else "PDF contains scanned images or handwritten work."
     except Exception:
         try:
             return file_bytes.decode('utf-8', errors='ignore')[:3000]
@@ -102,7 +102,7 @@ Provide a detailed diagnostic evaluation report in Markdown format:
     else:
         extracted_text = extract_pdf_text(file_bytes)
         payload = {
-            "model": "llama3-70b-8192",
+            "model": "llama-3.1-8b-instant",
             "messages": [
                 {
                     "role": "user",
@@ -179,7 +179,7 @@ with tab1:
                     
                     st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. Results will be visible once approved.")
                 except Exception as e:
-                    st.error(f"⚠️️ Error processing file: {e}")
+                    st.error(f"⚠️ Error processing file: {e}")
 
 # -------------------- TAB 2: STUDENT LOOKUP --------------------
 with tab2:
