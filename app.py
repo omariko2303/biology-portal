@@ -1,8 +1,7 @@
 import streamlit as st
 import sqlite3
 import datetime
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
@@ -22,9 +21,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_name TEXT,
             assignment_title TEXT,
-            file_bytes BLOB,
-            file_name TEXT,
-            mime_type TEXT,
+            student_answer TEXT,
             ai_draft TEXT,
             final_report TEXT,
             status TEXT,
@@ -36,22 +33,24 @@ def init_db():
 
 init_db()
 
-# ==================== HELPER FUNCTIONS (GEMINI SDK) ====================
-def analyze_homework_gemini(file_bytes, mime_type, student_name, assignment_title, instructions):
-    # Retrieve API key safely from Streamlit Secrets
+# ==================== HELPER FUNCTIONS (GEMINI API) ====================
+def analyze_text_gemini(student_name, assignment_title, instructions, student_answer):
     api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
     if not api_key:
         raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
 
-    # Initialize Gemini client using the official google-genai SDK
-    client = genai.Client(api_key=api_key)
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-Evaluate the student answer sheet submission.
+Evaluate the student's submitted text answer.
 Student Name: {student_name}
 Assignment: {assignment_title}
 Teacher Focus/Instructions: {instructions}
+
+Student Answer:
+{student_answer}
 
 Provide a comprehensive diagnostic evaluation report in Markdown format:
 1. Executive Summary & Estimated Raw Score / Grade Equivalent.
@@ -60,31 +59,21 @@ Provide a comprehensive diagnostic evaluation report in Markdown format:
 4. Actionable Next Steps for Improvement.
 """
 
-    # Pass the heavy PDF/Image binary bytes directly to Gemini
-    part_file = types.Part.from_bytes(
-        data=file_bytes,
-        mime_type=mime_type if mime_type else "application/pdf",
-    )
-
-    # Generate response using gemini-2.5-flash
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[prompt_text, part_file]
-    )
+    response = model.generate_content(prompt_text)
     return response.text
 
 # ==================== MAIN UI ====================
 st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
 
 tab1, tab2, tab3 = st.tabs([
-    "📤 Student Portal (Submit Homework)", 
+    "📤 Student Portal (Submit Text Answer)", 
     "📊 Student Results (Approved Reports)", 
     "🔒 Teacher Dashboard (Review & Release)"
 ])
 
 # -------------------- TAB 1: STUDENT SUBMIT --------------------
 with tab1:
-    st.header("Upload Homework (PDF or Images)")
+    st.header("Submit Homework Answer (Text Mode)")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -97,41 +86,38 @@ with tab1:
         value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas)."
     )
     
-    uploaded_file = st.file_uploader("Upload Homework File (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
+    student_answer = st.text_area(
+        "Type or Paste Your Homework Answer Here", 
+        placeholder="Write your biological explanations, definitions, and answers here...",
+        height=200
+    )
     
-    if st.button("🚀 Submit Homework to Teacher", type="primary"):
+    if st.button("🚀 Submit Answer to Teacher", type="primary"):
         if not student_name or not assignment_title:
             st.error("❌ Please enter student name and assignment title.")
-        elif not uploaded_file:
-            st.error("❌ Please upload a homework file.")
+        elif not student_answer.strip():
+            st.error("❌ Please write your answer before submitting.")
         else:
-            with st.spinner("Analyzing heavy PDF/image with Gemini AI and submitting to teacher..."):
-                file_bytes = uploaded_file.read()
-                mime_type = uploaded_file.type
-                file_name = uploaded_file.name
-                
+            with st.spinner("Analyzing answer with Gemini AI and submitting to teacher..."):
                 try:
-                    # AI Processing via Gemini
-                    ai_draft = analyze_homework_gemini(
-                        file_bytes, mime_type, 
-                        student_name, assignment_title, instructions
+                    ai_draft = analyze_text_gemini(
+                        student_name, assignment_title, instructions, student_answer
                     )
                     
-                    # Save to DB as PENDING
                     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     conn = sqlite3.connect(DB_FILE)
                     c = conn.cursor()
                     c.execute('''
                         INSERT INTO submissions 
-                        (student_name, assignment_title, file_bytes, file_name, mime_type, ai_draft, final_report, status, submitted_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
-                    ''', (student_name, assignment_title, file_bytes, file_name, mime_type, ai_draft, "", now))
+                        (student_name, assignment_title, student_answer, ai_draft, final_report, status, submitted_at)
+                        VALUES (?, ?, ?, ?, ?, 'PENDING', ?)
+                    ''', (student_name, assignment_title, student_answer, ai_draft, "", now))
                     conn.commit()
                     conn.close()
                     
-                    st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. Results will be visible once approved.")
+                    st.success(f"✅ Submission successful, {student_name}! Your answer is pending teacher review. Results will appear here once approved.")
                 except Exception as e:
-                    st.error(f"⚠️ Error processing file: {e}")
+                    st.error(f"⚠️ Error processing text: {e}")
 
 # -------------------- TAB 2: STUDENT LOOKUP --------------------
 with tab2:
@@ -171,35 +157,27 @@ with tab3:
         
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, ai_draft, submitted_at, file_bytes FROM submissions WHERE status = 'PENDING'")
+        c.execute("SELECT id, student_name, assignment_title, student_answer, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
         pending = c.fetchall()
         conn.close()
         
         if pending:
-            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[6]})": row for row in pending}
+            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[5]})": row for row in pending}
             selected_option = st.selectbox("Select Pending Submission:", list(options.keys()))
             
             selected_row = options[selected_option]
-            sub_id, s_name, a_title, f_name, m_type, ai_draft, sub_time, f_bytes = selected_row
+            sub_id, s_name, a_title, s_answer, ai_draft, sub_time = selected_row
             
             st.divider()
-            col_file, col_edit = st.columns([1, 1])
+            col_ans, col_edit = st.columns([1, 1])
             
-            with col_file:
-                st.subheader("📄 Uploaded Student File")
-                if "image" in m_type:
-                    st.image(f_bytes)
-                else:
-                    st.download_button(
-                        label=f"⬇️ Download Student PDF ({f_name})",
-                        data=f_bytes,
-                        file_name=f_name,
-                        mime=m_type
-                    )
+            with col_ans:
+                st.subheader("📝 Student's Submitted Answer")
+                st.info(s_answer)
             
             with col_edit:
                 st.subheader("✏️ AI Draft Evaluation (Teacher Edit)")
-                final_report_input = st.text_area("Review and edit evaluation before releasing to student:", value=ai_draft, height=400)
+                final_report_input = st.text_area("Review and edit evaluation before releasing to student:", value=ai_draft, height=300)
                 
                 if st.button("✅ Approve & Release Report to Student", type="primary"):
                     conn = sqlite3.connect(DB_FILE)
