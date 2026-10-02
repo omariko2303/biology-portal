@@ -2,8 +2,8 @@ import streamlit as st
 import sqlite3
 import datetime
 import os
-import tempfile
-import google.generativeai as genai
+import base64
+import requests
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
@@ -37,43 +37,77 @@ def init_db():
 
 init_db()
 
-# Default API Key
-DEFAULT_API_KEY = ""
+# ==================== HELPER FUNCTIONS (GROQ API) ====================
+def analyze_homework_groq(file_bytes, mime_type, student_name, assignment_title, instructions):
+    # Fetch key from Streamlit Secrets
+    api_key = st.secrets.get("GROQ_API_KEY")
+    if not api_key:
+        raise Exception("Groq API Key is not configured in Streamlit Secrets!")
 
-# ==================== HELPER FUNCTIONS ====================
-def analyze_homework(api_key, file_bytes, mime_type, file_name, student_name, assignment_title, instructions):
-    clean_key = api_key.strip()
-    genai.configure(api_key=clean_key)
-    
-    ext = os.path.splitext(file_name)[1]
-    if not ext:
-        ext = ".pdf" if "pdf" in mime_type else ".jpg"
-        
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
+    headers = {
+        "Authorization": f"Bearer {api_key.strip()}",
+        "Content-Type": "application/json"
+    }
 
-    try:
-        uploaded_file = genai.upload_file(tmp_path, mime_type=mime_type)
-        
-        prompt = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-Evaluate the attached student answer sheet.
+    prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
+Evaluate the student answer sheet submission.
 Student Name: {student_name}
 Assignment: {assignment_title}
 Teacher Focus/Instructions: {instructions}
 
-Provide a detailed diagnostic evaluation report in Markdown:
+Provide a detailed diagnostic evaluation report in Markdown format:
 1. Executive Summary & Estimated Raw Score / Grade Equivalent.
 2. Strengths (AO1 Knowledge, AO2 Application, AO3 Practical).
 3. Specific Misconceptions & Missing Cambridge Mark Scheme Keywords.
 4. Actionable Next Steps for Improvement.
 """
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content([uploaded_file, prompt])
-        return response.text
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+
+    if "image" in mime_type:
+        base64_image = base64.b64encode(file_bytes).decode('utf-8')
+        payload = {
+            "model": "llama-3.2-11b-vision-preview",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0.2
+        }
+    else:
+        # Fallback for PDF text content parsing
+        try:
+            extracted_text = file_bytes.decode('utf-8', errors='ignore')
+        except:
+            extracted_text = "Student PDF work attached."
+
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"{prompt_text}\n\nStudent Work Text Content:\n{extracted_text[:4000]}"
+                }
+            ],
+            "temperature": 0.2
+        }
+
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+    res_json = response.json()
+
+    if response.status_code == 200:
+        return res_json['choices'][0]['message']['content']
+    else:
+        error_msg = res_json.get('error', {}).get('message', response.text)
+        raise Exception(f"Groq API Error: {error_msg}")
 
 # ==================== MAIN UI ====================
 st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
@@ -87,8 +121,6 @@ tab1, tab2, tab3 = st.tabs([
 # -------------------- TAB 1: STUDENT SUBMIT --------------------
 with tab1:
     st.header("Upload Homework (PDF or Images)")
-    
-    api_key_input = st.text_input("Gemini API Key", value=DEFAULT_API_KEY, type="password", help="Default key loaded automatically.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -104,10 +136,7 @@ with tab1:
     uploaded_file = st.file_uploader("Upload Homework File (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
     
     if st.button("🚀 Submit Homework to Teacher", type="primary"):
-        active_key = api_key_input if api_key_input.strip() else DEFAULT_API_KEY
-        if not active_key:
-            st.error("❌ Please enter your Gemini API Key.")
-        elif not student_name or not assignment_title:
+        if not student_name or not assignment_title:
             st.error("❌ Please enter student name and assignment title.")
         elif not uploaded_file:
             st.error("❌ Please upload a homework file.")
@@ -118,9 +147,9 @@ with tab1:
                 file_name = uploaded_file.name
                 
                 try:
-                    # AI Processing
-                    ai_draft = analyze_homework(
-                        active_key, file_bytes, mime_type, file_name, 
+                    # AI Processing via Groq
+                    ai_draft = analyze_homework_groq(
+                        file_bytes, mime_type, 
                         student_name, assignment_title, instructions
                     )
                     
@@ -171,7 +200,7 @@ with tab3:
     st.header("Teacher Review Dashboard")
     
     pin = st.text_input("Teacher Passcode (PIN)", type="password")
-    TEACHER_PIN = "1234"  # Change your secret PIN here
+    TEACHER_PIN = "1234"
     
     if pin == TEACHER_PIN:
         st.success("🔓 Access Granted")
@@ -225,5 +254,6 @@ with tab3:
             st.info("🎉 No pending submissions to review!")
     elif pin != "":
         st.error("🔒 Incorrect PIN!")
+       
  
              
