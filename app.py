@@ -16,21 +16,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for polished Cambridge/Academic aesthetic
+# Custom CSS for Cambridge/Academic aesthetic
 st.markdown("""
 <style>
-    /* Main Theme Overrides */
     .stApp {
         background-color: #f8f9fa;
     }
-    
-    /* Headers & Typography */
     h1, h2, h3 {
         font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
         color: #1a365d;
     }
-    
-    /* Custom Badges */
     .badge-pending {
         background-color: #fef3c7;
         color: #92400e;
@@ -47,8 +42,6 @@ st.markdown("""
         font-weight: 600;
         font-size: 0.85rem;
     }
-    
-    /* Stats Metric Cards */
     .metric-card {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
@@ -67,8 +60,6 @@ st.markdown("""
         color: #64748b;
         font-size: 0.9rem;
     }
-    
-    /* Report Container */
     .report-box {
         background-color: #ffffff;
         border: 1px solid #cbd5e1;
@@ -114,7 +105,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Initialize DB on app load
+# Initialize DB on load
 init_db()
 
 def save_submission(student_name, assignment_title, teacher_instructions, file_bytes, file_name, mime_type, ai_draft_report):
@@ -188,7 +179,7 @@ def get_portal_stats():
 
 
 # ==========================================
-# 3. GEMINI AI EVALUATION ENGINE
+# 3. GEMINI AI STRICT MARK SCHEME ENGINE
 # ==========================================
 def get_gemini_api_key():
     """Retrieves API key from Streamlit secrets or sidebar input fallback."""
@@ -200,14 +191,14 @@ def get_gemini_api_key():
 
 def evaluate_submission_with_gemini(api_key, student_name, assignment_title, teacher_instructions, file_bytes, mime_type):
     """
-    Evaluates student homework using Gemini 1.5 Flash model with in-memory multimodal payload.
+    Evaluates student homework using Gemini 1.5 Flash strictly enforcing Cambridge Mark Schemes.
     """
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
     system_prompt = f"""
-You are acting as a Senior Chief Examiner for Cambridge IGCSE Biology (Syllabus 0610 / 0970).
-Your task is to thoroughly mark and evaluate the attached student homework submission.
+You are acting strictly as an official Senior Chief Examiner for Cambridge IGCSE Biology (Syllabus 0610 / 0970).
+Your core instruction is to evaluate the uploaded submission STRICTLY according to official Cambridge Mark Scheme principles.
 
 ### ASSIGNMENT CONTEXT:
 - **Student Name:** {student_name}
@@ -215,42 +206,43 @@ Your task is to thoroughly mark and evaluate the attached student homework submi
 - **Teacher Focus & Specific Mark Scheme Criteria:** 
   {teacher_instructions}
 
-### ASSESSMENT STANDARDS & FRAMEWORK:
-Evaluate the student's work strictly against Cambridge IGCSE Biology Assessment Objectives:
-1. **AO1 - Knowledge with Understanding:** Accurate scientific terms (e.g. active site, denature, turgid, flaccid, pathogen, transpiration stream, limiting factor, allele, codominance).
-2. **AO2 - Handling Information & Problem Solving:** Applying biological principles to new contexts, graph interpretations, numerical calculations (including magnification $M = I / A$).
-3. **AO3 - Experimental Skills & Investigations:** Identifying variables (independent, dependent, controlled), experimental errors, and improvements.
+### RIGID CAMBRIDGE MARKING CONVENTIONS TO ENFORCE:
+1. **Strict Key Terms Only:** 
+   - Award marks ONLY if exact biological terminology is present (e.g., "denature" instead of "destroy/die", "turgid/flaccid" instead of "swollen/shrunk", "active site" instead of "hole/slot", "transpiration stream" instead of "water movement").
+   - Reject vague everyday language.
 
-### REQUIRED EVALUATION REPORT STRUCTURE:
-Generate a detailed, constructive feedback report formatted in Markdown:
+2. **Cambridge Standard Symbols & Rules:**
+   - `;` separates independent marking points.
+   - `/` indicates acceptable alternative responses for the same marking point.
+   - **R (Reject):** Deduct or refuse credit for scientifically inaccurate terms or direct contradictions.
+   - **I (Ignore):** Ignore neutral non-contradictory statements.
+   - **ecf (Error Carried Forward):** Allow full credit for correct biological steps following a previous calculation/measurement error.
 
----
-# 🧬 IGCSE Biology Assessment Draft Report
+3. **Assessment Objectives Weighting:**
+   - **AO1 (Knowledge & Understanding):** Require exact definitions and scientific facts.
+   - **AO2 (Handling Information & Problem Solving):** Check numerical calculations (e.g., magnification $M = I / A$), correct units, and data/graph interpretation.
+   - **AO3 (Experimental & Practical):** Verify independent/dependent/controlled variables, safety precautions, and precise sources of error.
 
-### 📊 Overall Grade & Marks Estimate
-- **Estimated Cambridge Grade:** [e.g., A* (9), A (8), B (7), C (5), etc.]
-- **Mark Summary:** [Estimated Mark / Total Mark, e.g., 28/35]
+### REQUIRED EVALUATION REPORT FORMAT:
 
-### 💡 Strengths & Effective Terminology
-- Bullet points highlighting precise terminology used correctly.
-- Conceptual mastery shown in biological diagrams, calculations, or explanations.
+# 🧬 IGCSE Biology Strict Cambridge Assessment
 
-### ⚠️ Areas for Improvement & Misconceptions
-- Specific biological inaccuracies or incomplete definitions.
-- Missing Cambridge mark scheme keywords (e.g., mentioning "cell wall expands" instead of "exerts turgor pressure").
+### 📊 Raw Marks & Estimated Grade
+- **Raw Score:** [Allocated Marks / Total Available Marks]
+- **Estimated Grade:** [e.g., A* (9), A (8), B (7), C (5)]
+
+### ❌ Strict Mark Scheme Deductions (Where marks were missed)
+- List each question or response where credit was refused or lost.
+- **Student Written Answer vs Required Mark Scheme Phrase** (Highlight missing key terms).
+
+### 🛠️ Examiner Guidance & Corrective Terms
+- Provide exact Cambridge phrasing required to gain full marks if re-examined.
 
 ### 📝 Question-by-Question Detailed Breakdown
-Break down the student's responses visible in the uploaded work, specifying:
-- **Correct points awarded**
-- **Missing mark-scheme points**
-- **Examiner's tip for higher tier performance**
-
-### 🎯 Next Steps & Target Action
-- 2-3 concise action items for the student to revise.
+- Detail awarded points `;` and rejected points `R` using official mark scheme shorthand.
 ---
 """
 
-    # Direct memory payload for multimodal API (supports PDF and images)
     file_part = {
         "mime_type": mime_type,
         "data": file_bytes
@@ -266,7 +258,7 @@ Break down the student's responses visible in the uploaded work, specifying:
 st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
 st.caption("AI-Powered Cambridge IGCSE (0610/0970) Evaluation & Teacher Moderation Engine")
 
-# Sidebar Configuration & Secrets Management
+# Sidebar Configuration
 with st.sidebar:
     st.header("⚙️ Portal Settings")
     api_key = get_gemini_api_key()
@@ -283,10 +275,10 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 📌 Cambridge Syllabus")
-    st.info("**Syllabus Code:** 0610 / 0970\n\n**Core AO Target:** AO1, AO2, AO3\n\n**Engine:** Gemini 1.5 Flash")
+    st.info("**Syllabus Code:** 0610 / 0970\n\n**Mode:** Strict Mark Scheme Only\n\n**Engine:** Gemini 1.5 Flash")
 
 
-# Main App Navigation Tabs
+# Navigation Tabs
 tab1, tab2, tab3 = st.tabs([
     "📤 Submit Homework", 
     "📊 Student Results", 
@@ -298,7 +290,7 @@ tab1, tab2, tab3 = st.tabs([
 # ------------------------------------------
 with tab1:
     st.subheader("Submit Your Biology Homework")
-    st.write("Upload your completed handwritten or typed homework (PDF or Images) for instant AI evaluation.")
+    st.write("Upload your handwritten or typed homework (PDF or Images) for evaluation against Cambridge Mark Schemes.")
 
     with st.form("submission_form", clear_on_submit=False):
         col_a, col_b = st.columns(2)
@@ -309,7 +301,7 @@ with tab1:
 
         teacher_instructions = st.text_area(
             "Teacher Mark Scheme Focus / Key Topics (Optional)",
-            value="Focus on enzyme active site specificity, denaturation mechanisms, optimum pH/temperature graphs, and precise usage of collision theory terms.",
+            value="Enforce strict 0610 mark scheme guidelines on active site specificity, denaturation mechanisms, optimum pH/temperature graphs, and collision theory.",
             height=100,
             help="Provide syllabus guidelines or specific criteria for the AI examiner to focus on."
         )
@@ -317,7 +309,7 @@ with tab1:
         uploaded_file = st.file_uploader(
             "Upload Submission (PDF, PNG, JPG, JPEG) *",
             type=["pdf", "png", "jpg", "jpeg"],
-            help="Heavy PDFs and image scans are directly evaluated."
+            help="Heavy PDFs and images are processed directly from memory."
         )
 
         submit_btn = st.form_submit_button("🚀 Submit Homework for Marking", use_container_width=True)
@@ -334,12 +326,11 @@ with tab1:
             st.error("Please upload your homework file (PDF or Image).")
         else:
             try:
-                with st.spinner("🤖 Chief Examiner AI is reviewing your submission against Cambridge Mark Schemes..."):
+                with st.spinner("🤖 Chief Examiner AI is applying Cambridge Mark Scheme rules to your submission..."):
                     file_bytes = uploaded_file.read()
                     mime_type = uploaded_file.type
                     file_name = uploaded_file.name
 
-                    # Fallback mime-type mapping for images
                     if mime_type == "image/jpg":
                         mime_type = "image/jpeg"
 
@@ -378,7 +369,7 @@ with tab1:
 # ------------------------------------------
 with tab2:
     st.subheader("Lookup Released Assessment Reports")
-    st.write("Enter your full name as submitted to search for teacher-released evaluation reports.")
+    st.write("Enter your full name to view teacher-approved evaluation reports.")
 
     search_name = st.text_input("Enter Student Name to Search:", placeholder="e.g. Sarah Ahmed")
     
@@ -406,7 +397,6 @@ with tab2:
 with tab3:
     st.subheader("Teacher Moderation & Approval Dashboard")
 
-    # Secure Passcode Verification
     if "teacher_authenticated" not in st.session_state:
         st.session_state["teacher_authenticated"] = False
 
@@ -415,13 +405,12 @@ with tab3:
         with col1:
             passcode = st.text_input("Enter Teacher Passcode / PIN:", type="password", key="pin_input")
             if st.button("Unlock Dashboard", use_container_width=True):
-                if passcode == "1234":  # Default PIN
+                if passcode == "1234":
                     st.session_state["teacher_authenticated"] = True
                     st.rerun()
                 else:
                     st.error("Incorrect Passcode. Default PIN is '1234'.")
     else:
-        # Teacher Top Bar
         top_col1, top_col2 = st.columns([3, 1])
         with top_col1:
             st.write("Welcome, **Cambridge Biology Moderator**. Review, edit, and release reports below.")
@@ -432,7 +421,6 @@ with tab3:
 
         st.divider()
 
-        # Analytics Metrics
         pending_cnt, approved_cnt, total_cnt = get_portal_stats()
         m_col1, m_col2, m_col3 = st.columns(3)
         with m_col1:
@@ -449,17 +437,14 @@ with tab3:
         if not pending_items:
             st.success("✨ All caught up! No pending submissions to review.")
         else:
-            # Dropdown selection for pending submission
             options = {f"#{item['id']} - {item['student_name']} ({item['assignment_title']})": item['id'] for item in pending_items}
             selected_label = st.selectbox("Select Submission to Evaluate:", list(options.keys()))
             selected_id = options[selected_label]
 
-            # Retrieve full submission data (including raw file bytes)
             sub_data = get_submission_by_id(selected_id)
 
             st.markdown("---")
             
-            # Split View Layout: Left = Student Submission File, Right = AI Report Editor
             left_col, right_col = st.columns([1, 1])
 
             with left_col:
@@ -473,7 +458,6 @@ with tab3:
                     with st.expander("Teacher Instructions / Key Topics Focus"):
                         st.write(sub_data['teacher_instructions'])
 
-                # Render File Preview or Download
                 file_b = sub_data['file_bytes']
                 mtype = sub_data['mime_type']
 
@@ -482,20 +466,19 @@ with tab3:
                 elif mtype == "application/pdf":
                     st.info("📄 PDF File Uploaded.")
                     st.download_button(
-                        label="⬇️ Download PDF Submission",
+                        label="⬇️️ Download PDF Submission",
                         data=file_b,
                         file_name=sub_data['file_name'],
                         mime="application/pdf",
                         use_container_width=True
                     )
-                    # Embed PDF preview via base64 HTML object tag
                     base64_pdf = base64.b64encode(file_b).decode('utf-8')
                     pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500" type="application/pdf"></iframe>'
                     st.markdown(pdf_display, unsafe_allow_html=True)
 
             with right_col:
                 st.markdown("### 📝 Edit & Approve Assessment Report")
-                st.caption("Modify the AI draft feedback below before releasing it to the student.")
+                st.caption("Modify the strict mark scheme draft feedback below before releasing it to the student.")
 
                 edited_report = st.text_area(
                     "Final Report Editor (Markdown Supported):",
