@@ -1,60 +1,222 @@
 import streamlit as st
+import sqlite3
+import datetime
+import os
+import requests
+import tempfile
 import google.generativeai as genai
 
-st.set_page_config(page_title="Biology Performance Portal", page_icon="🧬", layout="wide")
+# ==================== PAGE CONFIG & SETUP ====================
+st.set_page_config(
+    page_title="IGCSE Biology Assessment Portal",
+    page_icon="🧬",
+    layout="wide"
+)
 
-st.title("🧬 Biology Performance & Study Portal")
-st.write("Welcome to your Biology analysis and study workspace.")
+# SQLite Database Setup
+DB_FILE = "homework_portal.db"
 
-# Sidebar for settings
-with st.sidebar:
-    st.header("⚙️ Settings")
-    api_key = st.text_input("Enter Gemini API Key:", type="password")
-    if api_key:
-        genai.configure(api_key=api_key)
-        st.success("API Key saved!")
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_name TEXT,
+            assignment_title TEXT,
+            file_bytes BLOB,
+            file_name TEXT,
+            mime_type TEXT,
+            ai_draft TEXT,
+            final_report TEXT,
+            status TEXT,
+            submitted_at TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# Main Tabs
-tab1, tab2, tab3 = st.tabs(["📊 Quiz Analysis", "📚 Core Topics", "🤖 AI Biology Tutor"])
+init_db()
 
-with tab1:
-    st.header("Quiz Performance Breakdown")
-    quiz_name = st.text_input("Quiz Title:", "Cell Biology & Transport Mechanisms")
-    score = st.number_input("Your Score (%):", min_value=0, max_value=100, value=85)
-    weak_areas = st.text_area("Topics needing review:", "Active transport, Enzyme kinetics, Osmosis calculations")
+# ==================== HELPER FUNCTIONS ====================
+def analyze_homework(api_key, file_bytes, mime_type, file_name, student_name, assignment_title, instructions):
+    genai.configure(api_key=api_key)
     
-    if st.button("Generate Feedback Report"):
-        if not api_key:
-            st.warning("Please enter your Gemini API Key in the sidebar.")
-        else:
-            try:
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                prompt = f"Provide a concise, highly structured study plan for a Biology student who scored {score}% on '{quiz_name}'. Key topics needing review: {weak_areas}."
-                response = model.generate_content(prompt)
-                st.subheader("📋 Personal Study Plan")
-                st.markdown(response.text)
-            except Exception as e:
-                st.error(f"Error generating report: {e}")
+    # Write bytes to temp file for Gemini API processing
+    ext = os.path.splitext(file_name)[1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
 
+    try:
+        uploaded_file = genai.upload_file(tmp_path, mime_type=mime_type)
+        
+        prompt = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
+Evaluate the attached student answer sheet.
+Student Name: {student_name}
+Assignment: {assignment_title}
+Teacher Focus/Instructions: {instructions}
+
+Provide a detailed diagnostic evaluation report in Markdown:
+1. Executive Summary & Estimated Raw Score / Grade Equivalent.
+2. Strengths (AO1 Knowledge, AO2 Application, AO3 Practical).
+3. Specific Misconceptions & Missing Cambridge Mark Scheme Keywords.
+4. Actionable Next Steps for Improvement.
+"""
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content([uploaded_file, prompt])
+        return response.text
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+# ==================== MAIN UI ====================
+st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
+
+tab1, tab2, tab3 = st.tabs([
+    "📤 Student Portal (Submit Homework)", 
+    "📊 Student Results (Approved Reports)", 
+    "🔒 Teacher Dashboard (Review & Release)"
+])
+
+# -------------------- TAB 1: STUDENT SUBMIT --------------------
+with tab1:
+    st.header("Upload Homework (PDF or Images)")
+    
+    api_key = st.text_input("Gemini API Key", type="password", help="Enter your Gemini API key")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        student_name = st.text_input("Student Name", placeholder="e.g., Lara")
+    with col2:
+        assignment_title = st.text_input("Assignment Title", placeholder="e.g., Cell Structure & Osmosis Quiz")
+        
+    instructions = st.text_area(
+        "Teacher Instructions / Mark Scheme Focus", 
+        value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas)."
+    )
+    
+    uploaded_file = st.file_uploader("Upload Homework File (PDF, PNG, JPG)", type=["pdf", "png", "jpg", "jpeg"])
+    
+    if st.button("🚀 Submit Homework to Teacher", type="primary"):
+        if not api_key:
+            st.error("❌ Please enter your Gemini API Key.")
+        elif not student_name or not assignment_title:
+            st.error("❌ Please enter student name and assignment title.")
+        elif not uploaded_file:
+            st.error("❌ Please upload a homework file.")
+        else:
+            with st.spinner("Analyzing homework with AI and submitting to teacher..."):
+                file_bytes = uploaded_file.read()
+                mime_type = uploaded_file.type
+                file_name = uploaded_file.name
+                
+                try:
+                    # AI Processing
+                    ai_draft = analyze_homework(
+                        api_key, file_bytes, mime_type, file_name, 
+                        student_name, assignment_title, instructions
+                    )
+                    
+                    # Save to DB as PENDING
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    conn = sqlite3.connect(DB_FILE)
+                    c = conn.cursor()
+                    c.execute('''
+                        INSERT INTO submissions 
+                        (student_name, assignment_title, file_bytes, file_name, mime_type, ai_draft, final_report, status, submitted_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                    ''', (student_name, assignment_title, file_bytes, file_name, mime_type, ai_draft, "", now))
+                    conn.commit()
+                    conn.close()
+                    
+                    st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. Results will be visible once approved.")
+                except Exception as e:
+                    st.error(f"⚠️ Error processing file: {e}")
+
+# -------------------- TAB 2: STUDENT LOOKUP --------------------
 with tab2:
-    st.header("Key Biology Syllabus Topics")
-    st.markdown("""
-    * **Cell Structure & Transport:** Organelles, Osmosis, Active Transport, Diffusion.
-    * **Biological Molecules:** Carbohydrates, Proteins, Lipids, Enzymes.
-    * **Genetics & Molecular Biology:** DNA Replication, Protein Synthesis, Inheritance.
-    * **Physiology:** Gas Exchange, Circulatory System, Nervous System.
-    """)
+    st.header("Check Approved Homework Reports")
+    search_name = st.text_input("Enter Student Name to view approved results")
+    
+    if st.button("🔍 Search Reports"):
+        if search_name.strip():
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute('''
+                SELECT assignment_title, final_report, submitted_at 
+                FROM submissions 
+                WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
+                ORDER BY id DESC
+            ''', (search_name.strip(),))
+            results = c.fetchall()
+            conn.close()
+            
+            if results:
+                for row in results:
+                    st.subheader(f"📚 {row[0]} (Approved Date: {row[2]})")
+                    st.markdown(row[1])
+                    st.divider()
+            else:
+                st.info("ℹ️ No approved reports found for this name yet. If you submitted recently, your teacher is still reviewing it.")
 
+# -------------------- TAB 3: TEACHER DASHBOARD --------------------
 with tab3:
-    st.header("Ask the AI Biology Tutor")
-    user_query = st.text_input("Ask any Biology question or topic explanation:")
-    if st.button("Get Answer"):
-        if not api_key:
-            st.warning("Please enter your Gemini API Key in the sidebar.")
+    st.header("Teacher Review Dashboard")
+    
+    pin = st.text_input("Teacher Passcode (PIN)", type="password")
+    TEACHER_PIN = "1234"  # Change your secret PIN here
+    
+    if pin == TEACHER_PIN:
+        st.success("🔓 Access Granted")
+        
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, ai_draft, submitted_at, file_bytes FROM submissions WHERE status = 'PENDING'")
+        pending = c.fetchall()
+        conn.close()
+        
+        if pending:
+            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[6]})": row for row in pending}
+            selected_option = st.selectbox("Select Pending Submission:", list(options.keys()))
+            
+            selected_row = options[selected_option]
+            sub_id, s_name, a_title, f_name, m_type, ai_draft, sub_time, f_bytes = selected_row
+            
+            st.divider()
+            col_file, col_edit = st.columns([1, 1])
+            
+            with col_file:
+                st.subheader("📄 Uploaded Student File")
+                if "image" in m_type:
+                    st.image(f_bytes)
+                else:
+                    st.download_button(
+                        label=f"⬇️ Download Student PDF ({f_name})",
+                        data=f_bytes,
+                        file_name=f_name,
+                        mime=m_type
+                    )
+            
+            with col_edit:
+                st.subheader("✏️ AI Draft Evaluation (Teacher Edit)")
+                final_report_input = st.text_area("Review and edit evaluation before releasing to student:", value=ai_draft, height=400)
+                
+                if st.button("✅ Approve & Release Report to Student", type="primary"):
+                    conn = sqlite3.connect(DB_FILE)
+                    c = conn.cursor()
+                    c.execute('''
+                        UPDATE submissions 
+                        SET final_report = ?, status = 'APPROVED' 
+                        WHERE id = ?
+                    ''', (final_report_input, sub_id))
+                    conn.commit()
+                    conn.close()
+                    st.balloons()
+                    st.success("🎉 Report approved and released to student!")
+                    st.rerun()
         else:
-            try:
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                response = model.generate_content(f"You are an expert Biology tutor. Answer the following clearly: {user_query}")
-                st.write(response.text)
-            except Exception as e:
-                st.error(f"Error: {e}")
+            st.info("🎉 No pending submissions to review!")
+    elif pin != "":
+        st.error("🔒 Incorrect PIN!")
+             
