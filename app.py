@@ -12,8 +12,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# SQLite Database Setup
-DB_FILE = "homework_portal.db"
+# SQLite Database Setup (تم استخدام اسم جديد لتجنب تعارض الأعمدة القديمة)
+DB_FILE = "homework_portal_v2.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -59,8 +59,8 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, homewo
 
     genai.configure(api_key=api_key)
     
-    # تم تحديث اسم النموذج ليطابق أحدث متطلبات جوجل الرسمية
-    model = genai.GenerativeModel("gemini-3.8-flash")
+    # استخدام النموذج المعتمد
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Evaluate the student's submitted homework text extracted from their PDF file.
@@ -248,6 +248,7 @@ with tab3:
             st.info("🎉 All caught up! No pending student submissions to review.")
     elif pin != "":
         st.error("🔒 Incorrect PIN!")
+      
        
  
              
