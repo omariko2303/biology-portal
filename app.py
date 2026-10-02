@@ -58,7 +58,8 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, homewo
         raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
 
     genai.configure(api_key=api_key)
-    # استخدام النموذج المحدث المتاح
+    
+    # تم تعديل اسم النموذج هنا ليطابق أحدث متطلبات واجهة برمجة التطبيقات
     model = genai.GenerativeModel("gemini-2.5-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
@@ -138,7 +139,7 @@ with tab1:
                     
                     st.success(f"✅ Submission successful, {student_name}! Your homework is pending teacher review. You can check your status in the 'Student Results' tab.")
                 except Exception as e:
-                    st.error(f"⚠️ Error during AI processing: {e}")
+                    st.error(f"⚠️️ Error during AI processing: {e}")
 
 # -------------------- TAB 2: STUDENT LOOKUP --------------------
 with tab2:
