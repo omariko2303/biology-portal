@@ -7,12 +7,12 @@ import google.generativeai as genai
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
-    page_title="IGCSE Biology Assessment Portal",
+    page_title="IGCSE Biology Assessment & Teacher Portal",
     page_icon="🧬",
     layout="wide"
 )
 
-# SQLite Database Setup (تم استخدام اسم جديد لتجنب تعارض الأعمدة القديمة)
+# SQLite Database Setup
 DB_FILE = "homework_portal_v2.db"
 
 def init_db():
@@ -25,7 +25,7 @@ def init_db():
             assignment_title TEXT,
             file_name TEXT,
             file_bytes BLOB,
-            extracted_text TEXT,
+            mime_type TEXT,
             ai_draft TEXT,
             final_report TEXT,
             status TEXT,
@@ -46,12 +46,12 @@ def extract_text_from_pdf(file_bytes):
             extracted = page.extract_text()
             if extracted:
                 text += extracted + "\n"
-        return text if text.strip() else "No readable text found in PDF (might be scanned images)."
+        return text if text.strip() else ""
     except Exception as e:
-        return f"Error extracting PDF text: {e}"
+        return ""
 
 # ==================== HELPER: GEMINI AI ANALYSIS ====================
-def analyze_homework_gemini(student_name, assignment_title, instructions, homework_text):
+def analyze_homework_gemini(student_name, assignment_title, instructions, file_bytes, mime_type, file_name):
     api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
     if not api_key:
@@ -63,13 +63,10 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, homewo
     model = genai.GenerativeModel("gemini-3.8-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-Evaluate the student's submitted homework text extracted from their PDF file.
+Evaluate the student's submitted homework assignment (attached as file/image or PDF).
 Student Name: {student_name}
 Assignment: {assignment_title}
 Teacher Focus/Instructions: {instructions}
-
-Student Homework Content:
-{homework_text}
 
 Provide a comprehensive diagnostic evaluation report in Markdown format:
 1. Executive Summary & Estimated Raw Score / Grade Equivalent (out of total marks).
@@ -78,21 +75,41 @@ Provide a comprehensive diagnostic evaluation report in Markdown format:
 4. Actionable Next Steps for Improvement.
 """
 
-    response = model.generate_content(prompt_text)
+    # إذا كان الملف صورة (JPG, JPEG, PNG)، Gemini يقرأ الصورة بذكاء بصري كامل
+    if "image" in mime_type:
+        image_part = {
+            "mime_type": mime_type,
+            "data": file_bytes
+        }
+        response = model.generate_content([prompt_text, image_part])
+    else:
+        # إذا كان PDF، نحاول استخراج النص أولاً
+        extracted_text = extract_text_from_pdf(file_bytes)
+        if not extracted_text.strip():
+            # إذا كان الـ PDF عبارة عن صور ممسوحة ضوئياً، نرسله كملف ثنائي ليدعمه جيميناي
+            pdf_part = {
+                "mime_type": "application/pdf",
+                "data": file_bytes
+            }
+            response = model.generate_content([prompt_text + f"\n[Note: PDF file uploaded: {file_name}]", pdf_part])
+        else:
+            full_prompt = f"{prompt_text}\n\nStudent Homework Extracted Text:\n{extracted_text}"
+            response = model.generate_content(full_prompt)
+            
     return response.text
 
 # ==================== MAIN UI ====================
 st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
 
 tab1, tab2, tab3 = st.tabs([
-    "📤 Student Portal (Submit PDF Homework)", 
+    "📤 Student Portal (Submit Homework)", 
     "📊 Student Results & Status Lookup", 
     "🔒 Teacher Review Dashboard"
 ])
 
 # -------------------- TAB 1: STUDENT SUBMIT --------------------
 with tab1:
-    st.header("Upload Homework PDF for AI Evaluation")
+    st.header("Upload Homework (PDF, JPG, or PNG)")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -105,25 +122,27 @@ with tab1:
         value="Strictly enforce Cambridge Mark Scheme keywords (e.g. net movement, water potential, chloroplast vs chlorophyll, magnification formulas, active transport)."
     )
     
-    uploaded_file = st.file_uploader("Upload Homework File (PDF only)", type=["pdf"])
+    # يدعم الصيغ الثلاث معاً
+    uploaded_file = st.file_uploader(
+        "Upload Homework File (Accepted formats: PDF, PNG, JPG, JPEG)", 
+        type=["pdf", "png", "jpg", "jpeg"]
+    )
     
-    if st.button("🚀 Submit PDF to Teacher & AI", type="primary"):
+    if st.button("🚀 Submit Homework to Teacher & AI", type="primary"):
         if not student_name or not assignment_title:
             st.error("❌ Please enter student name and assignment title.")
         elif not uploaded_file:
-            st.error("❌ Please upload a PDF homework file.")
+            st.error("❌ Please upload a homework file.")
         else:
-            with st.spinner("Processing PDF, analyzing with Gemini AI, and submitting..."):
+            with st.spinner("Processing file, analyzing with Gemini AI, and submitting..."):
                 file_bytes = uploaded_file.read()
                 file_name = uploaded_file.name
-                
-                # Extract text from PDF
-                homework_text = extract_text_from_pdf(file_bytes)
+                mime_type = uploaded_file.type
                 
                 try:
                     # Generate AI analysis
                     ai_draft = analyze_homework_gemini(
-                        student_name, assignment_title, instructions, homework_text
+                        student_name, assignment_title, instructions, file_bytes, mime_type, file_name
                     )
                     
                     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -131,9 +150,9 @@ with tab1:
                     c = conn.cursor()
                     c.execute('''
                         INSERT INTO submissions 
-                        (student_name, assignment_title, file_name, file_bytes, extracted_text, ai_draft, final_report, status, submitted_at)
+                        (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, status, submitted_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
-                    ''', (student_name, assignment_title, file_name, file_bytes, homework_text, ai_draft, "", now))
+                    ''', (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, "", now))
                     conn.commit()
                     conn.close()
                     
@@ -204,28 +223,31 @@ with tab3:
         
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("SELECT id, student_name, assignment_title, file_name, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
+        c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
         pending_list = c.fetchall()
         conn.close()
         
         if pending_list:
-            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[6]})": row for row in pending_list}
+            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[7]})": row for row in pending_list}
             selected_option = st.selectbox("Select Pending Submission to Review:", list(options.keys()))
             
             selected_row = options[selected_option]
-            sub_id, s_name, a_title, f_name, f_bytes, ai_draft, sub_time = selected_row
+            sub_id, s_name, a_title, f_name, m_type, f_bytes, ai_draft, sub_time = selected_row
             
             st.divider()
             col_file, col_edit = st.columns([1, 1])
             
             with col_file:
-                st.subheader(f"📄 Student PDF ({f_name})")
-                st.download_button(
-                    label=f"⬇ Download Student PDF File",
-                    data=f_bytes,
-                    file_name=f_name,
-                    mime="application/pdf"
-                )
+                st.subheader(f"📄 Student File ({f_name})")
+                if "image" in m_type:
+                    st.image(f_bytes, caption=f"Submitted by {s_name}", use_column_width=True)
+                else:
+                    st.download_button(
+                        label=f"⬇ Download Student PDF File",
+                        data=f_bytes,
+                        file_name=f_name,
+                        mime=m_type
+                    )
             
             with col_edit:
                 st.subheader("✏️ AI Draft Evaluation (Teacher Editing)")
