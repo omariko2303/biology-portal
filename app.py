@@ -45,7 +45,6 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, file_b
 
     genai.configure(api_key=api_key)
     
-    # استخدام النموذج المعتمد
     model = genai.GenerativeModel("gemini-3.8-flash")
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
@@ -195,66 +194,104 @@ with tab3:
         m2.metric("Approved Reports ✅", approved_count)
         st.divider()
         
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
-        pending_list = c.fetchall()
-        conn.close()
+        # اختيار القسم (طلبات معلقة للمراجعة أو تقارير معتمدة)
+        dashboard_mode = st.radio(
+            "Select Dashboard View:", 
+            ["⏳ Pending Submissions", "✅ Approved Reports Management"],
+            horizontal=True
+        )
         
-        if pending_list:
-            options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[7]})": row for row in pending_list}
-            selected_option = st.selectbox("Select Pending Submission to Review:", list(options.keys()))
+        st.divider()
+        
+        if dashboard_mode == "⏳ Pending Submissions":
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
+            pending_list = c.fetchall()
+            conn.close()
             
-            selected_row = options[selected_option]
-            sub_id, s_name, a_title, f_name, m_type, f_bytes, ai_draft, sub_time = selected_row
-            
-            st.divider()
-            col_file, col_edit = st.columns([1, 1])
-            
-            with col_file:
-                st.subheader(f"📄 Student File ({f_name})")
-                if m_type and "image" in m_type:
-                    st.image(f_bytes, caption=f"Submitted by {s_name}", use_column_width=True)
-                else:
-                    st.download_button(
-                        label=f"⬇ Download Student File",
-                        data=f_bytes,
-                        file_name=f_name,
-                        mime=m_type if m_type else "application/pdf"
-                    )
-            
-            with col_edit:
-                st.subheader("✏️ AI Draft Evaluation (Teacher Editing)")
-                final_report_input = st.text_area("Review and refine the AI diagnostic report before release:", value=ai_draft, height=450)
+            if pending_list:
+                options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[7]})": row for row in pending_list}
+                selected_option = st.selectbox("Select Pending Submission to Review:", list(options.keys()))
                 
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    if st.button("✅ Approve & Publish Report to Student", type="primary"):
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute('''
-                            UPDATE submissions 
-                            SET final_report = ?, status = 'APPROVED' 
-                            WHERE id = ?
-                        ''', (final_report_input, sub_id))
-                        conn.commit()
-                        conn.close()
-                        st.balloons()
-                        st.success("🎉 Report approved and successfully released to the student portal!")
-                        st.rerun()
+                selected_row = options[selected_option]
+                sub_id, s_name, a_title, f_name, m_type, f_bytes, ai_draft, sub_time = selected_row
                 
-                with col_btn2:
-                    # زر حذف التسليم المباشر
-                    if st.button("🗑️ Delete Submission", type="secondary"):
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute("DELETE FROM submissions WHERE id = ?", (sub_id,))
-                        conn.commit()
-                        conn.close()
-                        st.warning("⚠️ Submission deleted successfully!")
-                        st.rerun()
-        else:
-            st.info("🎉 All caught up! No pending student submissions to review.")
+                col_file, col_edit = st.columns([1, 1])
+                
+                with col_file:
+                    st.subheader(f"📄 Student File ({f_name})")
+                    if m_type and "image" in m_type:
+                        st.image(f_bytes, caption=f"Submitted by {s_name}", use_column_width=True)
+                    else:
+                        st.download_button(
+                            label=f"⬇ Download Student File",
+                            data=f_bytes,
+                            file_name=f_name,
+                            mime=m_type if m_type else "application/pdf"
+                        )
+                
+                with col_edit:
+                    st.subheader("✏️ AI Draft Evaluation (Teacher Editing)")
+                    final_report_input = st.text_area("Review and refine the AI diagnostic report before release:", value=ai_draft, height=450)
+                    
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button("✅ Approve & Publish Report to Student", type="primary"):
+                            conn = sqlite3.connect(DB_FILE)
+                            c = conn.cursor()
+                            c.execute('''
+                                UPDATE submissions 
+                                SET final_report = ?, status = 'APPROVED' 
+                                WHERE id = ?
+                            ''', (final_report_input, sub_id))
+                            conn.commit()
+                            conn.close()
+                            st.balloons()
+                            st.success("🎉 Report approved and successfully released to the student portal!")
+                            st.rerun()
+                    
+                    with col_btn2:
+                        if st.button("🗑️ Delete Submission", type="secondary"):
+                            conn = sqlite3.connect(DB_FILE)
+                            c = conn.cursor()
+                            c.execute("DELETE FROM submissions WHERE id = ?", (sub_id,))
+                            conn.commit()
+                            conn.close()
+                            st.warning("⚠️ Submission deleted successfully!")
+                            st.rerun()
+            else:
+                st.info("🎉 All caught up! No pending student submissions to review.")
+                
+        else: # Approved Reports Management
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute("SELECT id, student_name, assignment_title, file_name, final_report, submitted_at FROM submissions WHERE status = 'APPROVED'")
+            approved_list = c.fetchall()
+            conn.close()
+            
+            if approved_list:
+                approved_options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[5]})": row for row in approved_list}
+                selected_app_option = st.selectbox("Select Approved Report to Manage:", list(approved_options.keys()))
+                
+                app_row = approved_options[selected_app_option]
+                app_id, app_s_name, app_a_title, app_f_name, app_report, app_time = app_row
+                
+                st.subheader(f"📖 Approved Report for {app_s_name} ({app_a_title})")
+                st.markdown(app_report)
+                
+                st.divider()
+                if st.button("🗑️ Delete This Approved Report Permanently", type="primary"):
+                    conn = sqlite3.connect(DB_FILE)
+                    c = conn.cursor()
+                    c.execute("DELETE FROM submissions WHERE id = ?", (app_id,))
+                    conn.commit()
+                    conn.close()
+                    st.warning("⚠️ Approved report deleted successfully!")
+                    st.rerun()
+            else:
+                st.info("ℹ️ No approved reports found yet.")
+                
     elif pin != "":
         st.error("🔒 Incorrect PIN!")
        
