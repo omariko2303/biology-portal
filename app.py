@@ -12,8 +12,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# SQLite Database Setup
-DB_FILE = "homework_portal_v2.db"
+# SQLite Database Setup (تحديث الإصدار لإنشاء الجدول بالأعمدة الجديدة كلياً)
+DB_FILE = "homework_portal_v3.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -76,7 +76,7 @@ Provide a comprehensive diagnostic evaluation report in Markdown format:
 """
 
     # إذا كان الملف صورة (JPG, JPEG, PNG)، Gemini يقرأ الصورة بذكاء بصري كامل
-    if "image" in mime_type:
+    if mime_type and "image" in mime_type:
         image_part = {
             "mime_type": mime_type,
             "data": file_bytes
@@ -137,7 +137,7 @@ with tab1:
             with st.spinner("Processing file, analyzing with Gemini AI, and submitting..."):
                 file_bytes = uploaded_file.read()
                 file_name = uploaded_file.name
-                mime_type = uploaded_file.type
+                mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
                 
                 try:
                     # Generate AI analysis
@@ -239,14 +239,14 @@ with tab3:
             
             with col_file:
                 st.subheader(f"📄 Student File ({f_name})")
-                if "image" in m_type:
+                if m_type and "image" in m_type:
                     st.image(f_bytes, caption=f"Submitted by {s_name}", use_column_width=True)
                 else:
                     st.download_button(
-                        label=f"⬇ Download Student PDF File",
+                        label=f"⬇ Download Student File",
                         data=f_bytes,
                         file_name=f_name,
-                        mime=m_type
+                        mime=m_type if m_type else "application/pdf"
                     )
             
             with col_edit:
