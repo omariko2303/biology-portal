@@ -38,9 +38,9 @@ def init_db():
 
 init_db()
 
-# ==================== HELPER FUNCTIONS (GROQ API) ====================
+# ==================== HELPER FUNCTIONS (GROQ DYNAMIC API) ====================
 def extract_pdf_text(file_bytes):
-    """Extract text safely from PDF bytes if possible"""
+    """Extract text safely from PDF bytes"""
     try:
         import pypdf
         reader = pypdf.PdfReader(io.BytesIO(file_bytes))
@@ -56,13 +56,39 @@ def extract_pdf_text(file_bytes):
         except:
             return "PDF file submitted."
 
+def get_best_groq_model(headers, is_vision=False):
+    """Fetch available models dynamically from Groq account"""
+    try:
+        res = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=5)
+        if res.status_code == 200:
+            models_data = res.json().get("data", [])
+            model_ids = [m["id"] for m in models_data]
+            
+            if is_vision:
+                vision_models = [m for m in model_ids if "vision" in m or "ma-3.2" in m]
+                if vision_models:
+                    return vision_models[0]
+            
+            text_models = [m for m in model_ids if "llama" in m and "vision" not in m]
+            if text_models:
+                return text_models[0]
+            
+            if model_ids:
+                return model_ids[0]
+    except Exception:
+        pass
+    
+    return "llama-3.2-11b-vision-preview" if is_vision else "llama-3.1-8b-instant"
+
 def analyze_homework_groq(file_bytes, mime_type, student_name, assignment_title, instructions):
-    api_key = st.secrets.get("GROQ_API_KEY")
+    raw_key = st.secrets.get("GROQ_API_KEY", "")
+    api_key = raw_key.strip().strip('"').strip("'")
+    
     if not api_key:
         raise Exception("GROQ_API_KEY is missing in Streamlit Secrets! Please add it in App Settings -> Secrets.")
 
     headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
@@ -79,10 +105,13 @@ Provide a detailed diagnostic evaluation report in Markdown format:
 4. Actionable Next Steps for Improvement.
 """
 
-    if "image" in mime_type:
+    is_image = "image" in mime_type
+    selected_model = get_best_groq_model(headers, is_vision=is_image)
+
+    if is_image:
         base64_image = base64.b64encode(file_bytes).decode('utf-8')
         payload = {
-            "model": "llama-3.2-11b-vision-preview",
+            "model": selected_model,
             "messages": [
                 {
                     "role": "user",
@@ -102,7 +131,7 @@ Provide a detailed diagnostic evaluation report in Markdown format:
     else:
         extracted_text = extract_pdf_text(file_bytes)
         payload = {
-            "model": "llama-3.1-8b-instant",
+            "model": selected_model,
             "messages": [
                 {
                     "role": "user",
@@ -117,6 +146,8 @@ Provide a detailed diagnostic evaluation report in Markdown format:
 
     if response.status_code == 200:
         return res_json['choices'][0]['message']['content']
+    elif response.status_code == 401:
+        raise Exception("Invalid Groq API Key! Please double-check your key in Streamlit Secrets.")
     else:
         error_msg = res_json.get('error', {}).get('message', response.text)
         raise Exception(f"Groq API Error: {error_msg}")
@@ -159,7 +190,7 @@ with tab1:
                 file_name = uploaded_file.name
                 
                 try:
-                    # AI Processing via Groq
+                    # AI Processing via Dynamic Groq Fetch
                     ai_draft = analyze_homework_groq(
                         file_bytes, mime_type, 
                         student_name, assignment_title, instructions
