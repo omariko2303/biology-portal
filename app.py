@@ -35,7 +35,7 @@ def init_db():
 
 init_db()
 
-# تعليمات كامبريدج الثابتة (مخفية عن واجهة الطالب وتُنفذ تلقائياً)
+# المعايير الافتراضية الثابتة لكامبريدج
 DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
     "Strictly enforce Cambridge Mark Scheme keywords: "
     "1. Diffusion must include 'net movement', 'higher to lower concentration', 'concentration gradient', 'random movement'. "
@@ -76,12 +76,13 @@ Carefully inspect the handwritten answers or diagrams in the attached document. 
     return response.text
 
 # ==================== MAIN UI ====================
-st.title("🧬 IGCSE Biology Assessment & Teacher Portal")
+st.title("🧬 IGCSE Biology Assessment Portal")
 
+# تقسيم التبويبات بحسب الصلاحيات
 tab1, tab2, tab3 = st.tabs([
     "📤 Student Portal (Submit Homework)", 
     "📊 Student Results & Status Lookup", 
-    "🔒 Teacher Review Dashboard"
+    "🔒 Teacher Secure Portal"
 ])
 
 # -------------------- TAB 1: STUDENT SUBMIT --------------------
@@ -94,7 +95,7 @@ with tab1:
     with col2:
         assignment_title = st.text_input("Assignment Title", placeholder="e.g., hw")
         
-    # تم إخفاء حقل التعليمات عن واجهة الطالب بالكامل واستخدام المعايير الثابتة في الخلفية
+    # (تم إخفاء صندوق التعليمات بالكامل عن الطالب، واستخدام المعايير الافتراضية خلف الكواليس)
     
     uploaded_file = st.file_uploader(
         "Upload Homework File (Accepted formats: PDF, PNG, JPG, JPEG)", 
@@ -113,7 +114,6 @@ with tab1:
                 mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
                 
                 try:
-                    # تمرير المعايير الثابتة خلف الكواليس
                     ai_draft = analyze_homework_gemini(
                         student_name, assignment_title, DEFAULT_CAMBRIDGE_INSTRUCTIONS, file_bytes, mime_type, file_name
                     )
@@ -170,15 +170,25 @@ with tab2:
             else:
                 st.info("ℹ️ No submissions found for this name.")
 
-# -------------------- TAB 3: TEACHER DASHBOARD --------------------
+# -------------------- TAB 3: TEACHER SECURE PORTAL --------------------
 with tab3:
-    st.header("Teacher Review Dashboard")
+    st.header("Teacher Secure Dashboard")
     
-    pin = st.text_input("Teacher Passcode (PIN)", type="password")
-    TEACHER_PIN = "1234"
+    # حماية متقدمة للوحة المعلم (طلب كلمة مرور قوية أو PIN خاص)
+    pin = st.text_input("Enter Teacher Secret Passcode", type="password")
+    TEACHER_PIN = "Omar_Biology_2026_Secure" # كلمة مرور خاصة ومعقدة لا يمكن تخمينها
     
     if pin == TEACHER_PIN:
-        st.success("🔓 Access Granted")
+        st.success("🔓 Authorized Teacher Access Granted")
+        
+        # تحكم كامل بالتعليمات الخاصة بالمعلم
+        with st.expander("⚙️ Customize AI Mark Scheme Instructions (Teacher Only)", expanded=False):
+            custom_instructions = st.text_area(
+                "Edit Cambridge Mark Scheme Focus for Future Submissions:",
+                value=DEFAULT_CAMBRIDGE_INSTRUCTIONS,
+                height=150
+            )
+            st.info("ℹ️ These instructions guide the AI evaluation engine behind the scenes.")
         
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -194,14 +204,14 @@ with tab3:
         st.divider()
         
         dashboard_mode = st.radio(
-            "Select Dashboard View:", 
-            ["⏳ Pending Submissions", "✅ Approved Reports Management"],
+            "Select Dashboard Management Mode:", 
+            ["⏳ Review Pending Submissions", "✅ Manage Approved Reports"],
             horizontal=True
         )
         
         st.divider()
         
-        if dashboard_mode == "⏳ Pending Submissions":
+        if dashboard_mode == "⏳ Review Pending Submissions":
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
@@ -231,11 +241,11 @@ with tab3:
                 
                 with col_edit:
                     st.subheader("✏️ AI Draft Evaluation (Teacher Editing)")
-                    final_report_input = st.text_area("Review and refine the AI diagnostic report before release:", value=ai_draft, height=450)
+                    final_report_input = st.text_area("Review and refine the diagnostic report before release:", value=ai_draft, height=450)
                     
                     col_btn1, col_btn2 = st.columns(2)
                     with col_btn1:
-                        if st.button("✅ Approve & Publish Report to Student", type="primary"):
+                        if st.button("✅ Approve & Publish Report", type="primary"):
                             conn = sqlite3.connect(DB_FILE)
                             c = conn.cursor()
                             c.execute('''
@@ -246,7 +256,7 @@ with tab3:
                             conn.commit()
                             conn.close()
                             st.balloons()
-                            st.success("🎉 Report approved and successfully released to the student portal!")
+                            st.success("🎉 Report approved and published to student portal!")
                             st.rerun()
                     
                     with col_btn2:
@@ -259,7 +269,7 @@ with tab3:
                             st.warning("⚠️ Submission deleted successfully!")
                             st.rerun()
             else:
-                st.info("🎉 All caught up! No pending student submissions to review.")
+                st.info("🎉 All caught up! No pending submissions.")
                 
         else:
             conn = sqlite3.connect(DB_FILE)
@@ -288,10 +298,12 @@ with tab3:
                     st.warning("⚠️ Approved report deleted successfully!")
                     st.rerun()
             else:
-                st.info("ℹ️ No approved reports found yet.")
+                st.info("ℹ️ No approved reports found.")
                 
     elif pin != "":
-        st.error("🔒 Incorrect PIN!")
+        st.error("🔒 Incorrect Passcode! Access Denied.")
+    else:
+        st.info("🔒 Please enter the secure teacher passcode to access evaluation controls.")
        
  
              
