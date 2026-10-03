@@ -68,7 +68,7 @@ DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
 
 # Navigation View Constants
 VIEW_STUDENT = "📤 Student Portal (Submit & View Results)"
-VIEW_PARENT = "👨‍👩‍👧 Parent Analytics Dashboard"
+VIEW_PARENT = "👨‍👩‍‍👧 Parent Analytics Dashboard"
 VIEW_TEACHER = "🔒 Teacher Secure Portal"
 
 # ---------------------------------------------------------
@@ -129,6 +129,24 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, file_b
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-3.8-flash")
+
+    # If submitted as Google Drive Link, treat input as text prompt
+    if mime_type == "text/url":
+        url_text = file_bytes.decode("utf-8") if isinstance(file_bytes, bytes) else str(file_bytes)
+        prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
+Candidate Name: {student_name}
+Assignment: {assignment_title}
+Instructions & Mark Scheme Standard: {instructions}
+Student Shared Google Drive Link: {url_text}
+
+Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format, and on the very first line provide an estimated numeric percentage score or raw mark out of total (e.g., [SCORE: 85%]). Structure:
+1. **[SCORE: XX%] Executive Summary & Grade Equivalent**
+2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
+3. **Specific Biological Misconceptions & Errors Identified**
+4. **Actionable Next Steps for Improvement**
+"""
+        response = model.generate_content(prompt_text)
+        return response.text
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 You are evaluating a student's actual homework submission attached as an image or PDF.
@@ -224,57 +242,88 @@ if portal_tab == VIEW_STUDENT:
                     for d_title, d_date in deadline_records:
                         st.caption(f"• **{d_title}**: Due by **{d_date}**")
                 
-                uploaded_file = st.file_uploader(
-                    "Upload Homework File (PDF, PNG, JPG)", 
-                    type=["pdf", "png", "jpg", "jpeg"]
+                # Dynamic Submission Options to solve Google Drive / Mobile Upload issues
+                submit_mode = st.radio(
+                    "Select How You Want to Submit:",
+                    ["📁 Direct File Upload (Downloaded PDF/Image)", "🔗 Google Drive Shared Link"],
+                    horizontal=True
                 )
+                
+                uploaded_file = None
+                drive_link = ""
+                
+                if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
+                    st.caption("💡 **Tip:** If using Google Drive on mobile, download the file to your phone first before uploading here.")
+                    uploaded_file = st.file_uploader(
+                        "Upload Homework File (PDF, PNG, JPG)", 
+                        type=["pdf", "png", "jpg", "jpeg"],
+                        key="mobile_hw_uploader"
+                    )
+                else:
+                    drive_link = st.text_input(
+                        "Paste Google Drive Shared Link:", 
+                        placeholder="https://drive.google.com/file/d/..."
+                    )
+                    st.caption("⚠️ Ensure link sharing is set to **'Anyone with the link can view'**.")
                 
                 if st.button("🚀 Submit Homework", type="primary"):
                     if not assignment_title.strip():
                         st.error("❌ Please enter an Assignment Title before submitting.")
-                    elif uploaded_file is None:
-                        st.error("❌ Upload incomplete! The file failed to reach the server. Tap the red 'X', select the file again, and wait for the upload bar to complete.")
+                    elif submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)" and uploaded_file is None:
+                        st.error("❌ Upload failed or incomplete. Please tap the red 'X', select the file again from your local downloads, or switch to 'Google Drive Shared Link' above.")
+                    elif submit_mode == "🔗 Google Drive Shared Link" and not drive_link.strip():
+                        st.error("❌ Please paste a valid Google Drive link before submitting.")
                     else:
-                        file_bytes = uploaded_file.read()
-                        if len(file_bytes) == 0:
-                            st.error("❌ The uploaded file is empty. Please re-select your document.")
-                        else:
+                        file_bytes = None
+                        file_name = ""
+                        mime_type = ""
+                        
+                        if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
+                            file_bytes = uploaded_file.getvalue()
+                            if not file_bytes or len(file_bytes) == 0:
+                                st.error("❌ Uploaded file is empty. Please re-select the file.")
+                                st.stop()
                             file_name = uploaded_file.name
                             mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-                            now_dt = datetime.datetime.now()
-                            now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+                        else:
+                            file_bytes = drive_link.strip().encode("utf-8")
+                            file_name = "Google_Drive_Link.txt"
+                            mime_type = "text/url"
                             
-                            is_late = 0
-                            conn = sqlite3.connect(DB_FILE)
-                            c = conn.cursor()
-                            c.execute("SELECT due_date FROM deadlines WHERE LOWER(assignment_title) = LOWER(?)", (assignment_title.strip(),))
-                            d_res = c.fetchone()
+                        now_dt = datetime.datetime.now()
+                        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        is_late = 0
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute("SELECT due_date FROM deadlines WHERE LOWER(assignment_title) = LOWER(?)", (assignment_title.strip(),))
+                        d_res = c.fetchone()
+                        
+                        if d_res:
+                            try:
+                                due_dt = datetime.datetime.strptime(d_res[0], "%Y-%m-%d %H:%M:%S")
+                                if now_dt > due_dt:
+                                    is_late = 1
+                            except:
+                                pass
+                        
+                        c.execute('''
+                            INSERT INTO submissions 
+                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at, is_late)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (matched_student, assignment_title.strip(), file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now_str, is_late))
+                        conn.commit()
+                        conn.close()
+                        
+                        st.balloons()
+                        selected_quote = random.choice(MOTIVATIONAL_QUOTES)
+                        
+                        if is_late == 1:
+                            st.warning(f"⚠️ Homework submitted for **{matched_student}**, but logged as **LATE** (Past set deadline).")
+                        else:
+                            st.success(f"⚡ Homework submitted instantly for **{matched_student}**!")
                             
-                            if d_res:
-                                try:
-                                    due_dt = datetime.datetime.strptime(d_res[0], "%Y-%m-%d %H:%M:%S")
-                                    if now_dt > due_dt:
-                                        is_late = 1
-                                except:
-                                    pass
-                            
-                            c.execute('''
-                                INSERT INTO submissions 
-                                (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at, is_late)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (matched_student, assignment_title.strip(), file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now_str, is_late))
-                            conn.commit()
-                            conn.close()
-                            
-                            st.balloons()
-                            selected_quote = random.choice(MOTIVATIONAL_QUOTES)
-                            
-                            if is_late == 1:
-                                st.warning(f"⚠️ Homework submitted for **{matched_student}**, but logged as **LATE** (Past set deadline).")
-                            else:
-                                st.success(f"⚡ Homework submitted instantly for **{matched_student}**! Your teacher will review and grade it soon.")
-                                
-                            st.info(f"💡 **Exam Tip & Motivation:**\n\n{selected_quote}")
+                        st.info(f"💡 **Exam Tip & Motivation:**\n\n{selected_quote}")
             else:
                 st.error("🔒 Invalid 4-Digit Student PIN!")
         else:
@@ -530,7 +579,11 @@ elif portal_tab == VIEW_TEACHER:
                 
                 with col_file:
                     st.subheader(f"📄 Original File ({f_name})")
-                    if m_type and "image" in m_type:
+                    if m_type == "text/url":
+                        drive_url = f_bytes.decode("utf-8") if isinstance(file_bytes, bytes) else str(f_bytes)
+                        st.info("🔗 **Google Drive Shared Link Submission:**")
+                        st.markdown(f"[👉 Click here to open student's Google Drive File]({drive_url})")
+                    elif m_type and "image" in m_type:
                         st.image(f_bytes, caption=f"Submitted by {s_name}", use_column_width=True)
                     else:
                         st.download_button("⬇ Download File", data=f_bytes, file_name=f_name, mime=m_type)
@@ -559,7 +612,7 @@ elif portal_tab == VIEW_TEACHER:
                                     st.success("✅ Draft generated successfully!")
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"⚠️️ Error generating draft: {e}")
+                                    st.error(f"⚠ Error generating draft: {e}")
                     
                     final_report_input = st.text_area(
                         "Refine Report:", 
