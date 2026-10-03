@@ -16,7 +16,7 @@ DB_FILE = "homework_portal_v5.db"
 PARENT_PIN = "Omar_Parent_2026"
 TEACHER_PIN = "Omar_Biology_2026_Secure"
 
-# Student PINs dictionary (You can change names and PINs here)
+# Student Unique PINs (Each student has their own private PIN)
 STUDENT_PINS = {
     "Lara": "Lara_2026",
     "Student Two": "Student2_2026"
@@ -118,7 +118,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
         st.subheader("Upload New Assignment")
         col1, col2 = st.columns(2)
         with col1:
-            student_name = st.selectbox("Select Student Name", list(STUDENT_PINS.keys()))
+            student_name = st.selectbox("Select Your Name", list(STUDENT_PINS.keys()))
         with col2:
             assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
             
@@ -159,15 +159,18 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                         
     with s_tab2:
         st.subheader("Check Your Approved Grades & Teacher Corrections")
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-            login_student = st.selectbox("Select Your Profile", list(STUDENT_PINS.keys()), key="login_student_select")
-        with col_s2:
-            student_passcode = st.text_input("Enter Your Student PIN", type="password", key="student_pin_input")
+        entered_student_pin = st.text_input("Enter Your Personal Student PIN", type="password", key="student_unique_pin")
         
-        if st.button("🔍 View My Results"):
-            if student_passcode == STUDENT_PINS.get(login_student):
-                st.success(f"🔓 Welcome back, {login_student}!")
+        if entered_student_pin:
+            # Automatically identify the student based on their unique PIN
+            matched_student = None
+            for s_name, s_pin in STUDENT_PINS.items():
+                if entered_student_pin == s_pin:
+                    matched_student = s_name
+                    break
+            
+            if matched_student:
+                st.success(f"🔓 Welcome back, {matched_student}! Here are your private results:")
                 conn = sqlite3.connect(DB_FILE)
                 c = conn.cursor()
                 c.execute('''
@@ -175,7 +178,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                     FROM submissions 
                     WHERE LOWER(student_name) = LOWER(?)
                     ORDER BY id DESC
-                ''', (login_student,))
+                ''', (matched_student,))
                 results = c.fetchall()
                 conn.close()
                 
@@ -197,15 +200,13 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                             st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** by your teacher.")
                         st.divider()
                 else:
-                    st.info("ℹ️ No records found for your profile.")
-            elif student_passcode != "":
-                st.error("🔒 Incorrect Student PIN!")
+                    st.info("ℹ️ No records found for your profile yet.")
             else:
-                st.info("🔒 Please enter your student PIN.")
+                st.error("🔒 Incorrect Student PIN! Please check your personal PIN.")
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
 elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)":
-    st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
+    st.header("👨‍👩‍‍👧 Parent Analytics & Performance Portal")
     st.info("مرحباً بك أستاذنا ولي الأمر. تتيح لك هذه البوابة متابعة تقدم مستوى ابنك/ابنتك، درجات الواجبات، وتحليلات الأداء بدقة.")
     
     parent_passcode = st.text_input("Enter Parent Access PIN", type="password")
@@ -313,7 +314,7 @@ else:
                     corrected_file_upload = st.file_uploader("Upload corrected notes", type=["pdf", "png", "jpg"], key=f"up_{sub_id}")
                 
                 with col_edit:
-                    st.subheader("✏️️ Edit AI Report & AI Follow-up Questions Generator")
+                    st.subheader("✏️ Edit AI Report & AI Follow-up Questions Generator")
                     final_report_input = st.text_area("Refine Report:", value=ai_draft, height=400)
                     
                     if st.button("💡 Generate AI Follow-up Questions for Next Session"):
