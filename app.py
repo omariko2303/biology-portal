@@ -5,13 +5,16 @@ import io
 import random
 import google.generativeai as genai
 
+# ---------------------------------------------------------
+# PAGE CONFIGURATION & CUSTOM STYLES
+# ---------------------------------------------------------
 st.set_page_config(
     page_title="IGCSE Biology Assessment & Analytics Portal",
     page_icon="🧬",
     layout="wide"
 )
 
-# 🙈 HIDE STREAMLIT FOOTER, TOOLBAR & "MANAGE APP" BUTTON
+# Hide Streamlit UI elements (Header, Footer, Toolbar, Deployment/Manage Buttons)
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -25,24 +28,27 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-DB_FILE = "homework_portal_v5.db"
+# ---------------------------------------------------------
+# CONSTANTS & AUTHENTICATION DICTIONARIES
+# ---------------------------------------------------------
+DB_FILE = "homework_portal_v6.db"
 
-# 🔑 Teacher Security Passcode
+# 🔑 Teacher Password
 TEACHER_PIN = "Omar_Biology_2026_Secure"
 
-# 🔑 4-Digit Student PIN Mapping (PIN -> Student Name)
+# 🔑 Student 4-Digit PINs (PIN -> Student Name)
 STUDENT_PINS = {
     "1234": "Alia",
     "5678": "Lara"
 }
 
-# 🔑 4-Digit Parent PIN Mapping (PIN -> (Parent Name, Linked Student Name))
+# 🔑 Parent 4-Digit PINs (PIN -> (Parent Name, Linked Student Name))
 PARENT_PINS = {
     "1111": ("Nahed", "Alia"),
     "2222": ("Nashwa", "Lara")
 }
 
-# 🌟 Motivational & Cambridge Strategy Quote Library
+# 🌟 Motivational & Strategy Quotes
 MOTIVATIONAL_QUOTES = [
     "🌟 *'Success is the sum of small efforts, repeated day in and day out.'* — Keep pushing for that A*!",
     "🧬 *'Precision in biological terms turns good answers into top marks.'* Great job submitting!",
@@ -51,9 +57,28 @@ MOTIVATIONAL_QUOTES = [
     "🔬 *'Mastering command words (Describe vs Explain) is your secret weapon.'* Keep up the fantastic momentum!"
 ]
 
+DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
+    "Strictly enforce Cambridge Mark Scheme keywords: "
+    "1. Diffusion must include 'net movement', 'higher to lower concentration', 'concentration gradient', 'random movement'. "
+    "2. Osmosis must include 'net movement of water molecules', 'higher water potential', 'lower water potential', 'partially permeable membrane'. "
+    "3. Active transport must include 'against concentration gradient', 'energy from respiration / ATP', 'carrier proteins'. "
+    "4. Distinguish chloroplast (organelle/site) from chlorophyll (green pigment absorbing light). "
+    "5. Magnification: M = I/A, consistent unit conversion (1 mm = 1000 um), no units for magnification, with 'x' sign."
+)
+
+# Navigation View Constants
+VIEW_STUDENT = "📤 Student Portal (Submit & View Results)"
+VIEW_PARENT = "👨‍👩‍👧 Parent Analytics Dashboard"
+VIEW_TEACHER = "🔒 Teacher Secure Portal"
+
+# ---------------------------------------------------------
+# DATABASE INITIALIZATION
+# ---------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    
+    # Submissions Table
     c.execute('''
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,26 +94,36 @@ def init_db():
             teacher_corrected_name TEXT,
             teacher_corrected_mime TEXT,
             status TEXT,
-            submitted_at TEXT
+            submitted_at TEXT,
+            is_late INTEGER DEFAULT 0
         )
     ''')
+    
+    # Deadlines Table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS deadlines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_title TEXT UNIQUE,
+            due_date TEXT
+        )
+    ''')
+    
+    # Safe migration check for existing schemas
+    c.execute("PRAGMA table_info(submissions)")
+    columns = [col[1] for col in c.fetchall()]
+    if "is_late" not in columns:
+        c.execute("ALTER TABLE submissions ADD COLUMN is_late INTEGER DEFAULT 0")
+        
     conn.commit()
     conn.close()
 
 init_db()
 
-DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
-    "Strictly enforce Cambridge Mark Scheme keywords: "
-    "1. Diffusion must include 'net movement', 'higher to lower concentration', 'concentration gradient', 'random movement'. "
-    "2. Osmosis must include 'net movement of water molecules', 'higher water potential', 'lower water potential', 'partially permeable membrane'. "
-    "3. Active transport must include 'against concentration gradient', 'energy from respiration / ATP', 'carrier proteins'. "
-    "4. Distinguish chloroplast (organelle/site) from chlorophyll (green pigment absorbing light). "
-    "5. Magnification: M = I/A, consistent unit conversion (1 mm = 1000 um), no units for magnification, with 'x' sign."
-)
-
+# ---------------------------------------------------------
+# HELPER FUNCTIONS
+# ---------------------------------------------------------
 def analyze_homework_gemini(student_name, assignment_title, instructions, file_bytes, mime_type, file_name):
     api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
-    
     if not api_key:
         raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets!")
 
@@ -126,36 +161,69 @@ def extract_score_from_text(report_text):
             return 75.0
     return 75.0
 
+def get_missing_assignments(student_name):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT assignment_title, due_date FROM deadlines")
+    all_deadlines = c.fetchall()
+    
+    c.execute("SELECT LOWER(assignment_title) FROM submissions WHERE LOWER(student_name) = LOWER(?)", (student_name,))
+    submitted_titles = set(row[0] for row in c.fetchall())
+    conn.close()
+    
+    missing = []
+    now_dt = datetime.datetime.now()
+    
+    for d_title, d_date_str in all_deadlines:
+        if d_title.lower().strip() not in submitted_titles:
+            try:
+                due_dt = datetime.datetime.strptime(d_date_str, "%Y-%m-%d %H:%M:%S")
+                if now_dt > due_dt:
+                    missing.append((d_title, d_date_str))
+            except:
+                pass
+    return missing
+
+# ---------------------------------------------------------
+# MAIN APP HEADER & ROUTING
+# ---------------------------------------------------------
 st.title("🧬 IGCSE Biology Assessment & Analytics Portal")
 
 portal_tab = st.selectbox(
     "Select Portal View:",
-    [
-        "📤 Student Portal (Submit & View Results)", 
-        "👨‍👩‍👧 Parent Analytics Dashboard", 
-        "🔒 Teacher Secure Portal"
-    ]
+    [VIEW_STUDENT, VIEW_PARENT, VIEW_TEACHER]
 )
 
-# -------------------- 1. STUDENT PORTAL --------------------
-if portal_tab == "📤 Student Portal (Submit & View Results)":
+# ---------------------------------------------------------
+# 1. STUDENT PORTAL VIEW
+# ---------------------------------------------------------
+if portal_tab == VIEW_STUDENT:
     st.header("Student Portal")
+    s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Manage Submissions"])
     
-    s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Performance"])
-    
-    # --- SUBMIT HOMEWORK TAB (INSTANT 0-WAIT SUBMISSION WITH EFFECTS) ---
+    # --- TAB 1: SUBMIT ASSIGNMENT ---
     with s_tab1:
         st.subheader("Upload New Assignment")
-        
         student_pin_sub = st.text_input("Enter Your 4-Digit Student PIN", type="password", max_chars=4, key="st_sub_pin")
         
         if student_pin_sub:
             matched_student = STUDENT_PINS.get(student_pin_sub)
-            
             if matched_student:
                 st.success(f"🔓 Authenticated as: **{matched_student}**")
                 
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("SELECT assignment_title, due_date FROM deadlines ORDER BY id DESC")
+                deadline_records = c.fetchall()
+                conn.close()
+                
                 assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
+                
+                if deadline_records:
+                    st.info("📅 **Active Homework Deadlines:**")
+                    for d_title, d_date in deadline_records:
+                        st.caption(f"• **{d_title}**: Due by **{d_date}**")
+                
                 uploaded_file = st.file_uploader(
                     "Upload Homework File (PDF, PNG, JPG)", 
                     type=["pdf", "png", "jpg", "jpeg"]
@@ -168,42 +236,58 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                         file_bytes = uploaded_file.read()
                         file_name = uploaded_file.name
                         mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        now_dt = datetime.datetime.now()
+                        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                         
+                        is_late = 0
                         conn = sqlite3.connect(DB_FILE)
                         c = conn.cursor()
+                        c.execute("SELECT due_date FROM deadlines WHERE LOWER(assignment_title) = LOWER(?)", (assignment_title.strip(),))
+                        d_res = c.fetchone()
+                        
+                        if d_res:
+                            try:
+                                due_dt = datetime.datetime.strptime(d_res[0], "%Y-%m-%d %H:%M:%S")
+                                if now_dt > due_dt:
+                                    is_late = 1
+                            except:
+                                pass
+                        
                         c.execute('''
                             INSERT INTO submissions 
-                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now))
+                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at, is_late)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (matched_student, assignment_title.strip(), file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now_str, is_late))
                         conn.commit()
                         conn.close()
                         
-                        # 🎈 CELEBRATION EFFECTS & MOTIVATIONAL QUOTE 🎈
                         st.balloons()
                         selected_quote = random.choice(MOTIVATIONAL_QUOTES)
-                        st.success(f"⚡ Homework submitted instantly for **{matched_student}**! Your teacher will review and grade it soon.")
+                        
+                        if is_late == 1:
+                            st.warning(f"⚠️ Homework submitted for **{matched_student}**, but logged as **LATE** (Past set deadline).")
+                        else:
+                            st.success(f"⚡ Homework submitted instantly for **{matched_student}**! Your teacher will review and grade it soon.")
+                            
                         st.info(f"💡 **Exam Tip & Motivation:**\n\n{selected_quote}")
             else:
-                st.error("🔒 Invalid 4-Digit PIN! Please check your code.")
+                st.error("🔒 Invalid 4-Digit Student PIN!")
         else:
             st.info("🔑 Please enter your 4-digit PIN to upload your homework.")
 
-    # --- VIEW RESULTS TAB (WITH DYNAMIC PERFORMANCE BADGES) ---
+    # --- TAB 2: RESULTS & UNSUBMIT ---
     with s_tab2:
-        st.subheader("🔒 View Performance & Teacher Feedback")
+        st.subheader("🔒 View Performance & Manage Submissions")
         entered_student_pin = st.text_input("Enter Your 4-Digit PIN", type="password", max_chars=4, key="student_pin_view")
         
         if entered_student_pin:
             matched_student = STUDENT_PINS.get(entered_student_pin)
-            
             if matched_student:
                 st.success(f"🔓 Welcome back, {matched_student}!")
                 conn = sqlite3.connect(DB_FILE)
                 c = conn.cursor()
                 c.execute('''
-                    SELECT assignment_title, estimated_score, final_report, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at 
+                    SELECT id, assignment_title, estimated_score, final_report, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at, is_late 
                     FROM submissions 
                     WHERE LOWER(student_name) = LOWER(?)
                     ORDER BY id ASC
@@ -213,78 +297,107 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 
                 if results:
                     st.subheader(f"📊 Assessment Reports for {matched_student}")
-                    prev_score = None
-                    
-                    # Reversed loop to display newest on top, maintaining accurate progress calculation
                     for i, row in enumerate(reversed(results)):
-                        a_title, score, report, t_bytes, t_name, t_mime, status, sub_time = row
+                        sub_id, a_title, score, report, t_bytes, t_name, t_mime, status, sub_time, is_late = row
+                        late_badge = " ⚠️ **(SUBMITTED LATE)**" if is_late == 1 else ""
                         
                         if status == 'APPROVED':
-                            st.success(f"📚 **{a_title}** — **APPROVED** ({sub_time})")
-                            
-                            # Calculate score delta relative to chronologically preceding submission
+                            st.success(f"📚 **{a_title}** — **APPROVED** ({sub_time}){late_badge}")
                             orig_index = len(results) - 1 - i
                             if orig_index > 0:
-                                prev_score = results[orig_index - 1][1]
+                                prev_score = results[orig_index - 1][2]
                                 diff = score - prev_score
                                 if diff > 0:
                                     st.info(f"🔥 **Progress Boost!** Score increased by **+{diff:.1f}%** compared to previous assignment!")
                                 elif diff == 0:
-                                    st.info(f"🎯 **Consistent Mastery!** Maintained your solid score of {score:.1f}%.")
+                                    st.info(f"🎯 **Consistent Mastery!** Maintained your score of {score:.1f}%.")
                                 else:
-                                    st.warning(f"📈 Score dropped by **{abs(diff):.1f}%**. Check feedback below to target your weak spots!")
+                                    st.warning(f"📈 Score dropped by **{abs(diff):.1f}%**. Review feedback below!")
                             
                             st.markdown(report)
                             if t_bytes:
                                 st.download_button(
-                                    label=f"📥 Download Teacher's Marked File ({t_name})",
+                                    label=f"📥 Download Marked File ({t_name})",
                                     data=t_bytes,
                                     file_name=t_name,
                                     mime=t_mime if t_mime else "application/pdf",
-                                    key=f"st_dl_{a_title}_{sub_time}_{i}"
+                                    key=f"st_dl_{sub_id}_{i}"
                                 )
                         else:
-                            st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** by your teacher.")
+                            st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** ({sub_time}){late_badge}")
+                            col_u1, col_u2 = st.columns([3, 1])
+                            with col_u1:
+                                st.caption("Uploaded wrong document by mistake?")
+                            with col_u2:
+                                if st.button(f"🗑️ Unsubmit File", key=f"unsub_{sub_id}"):
+                                    conn = sqlite3.connect(DB_FILE)
+                                    c = conn.cursor()
+                                    c.execute("DELETE FROM submissions WHERE id = ?", (sub_id,))
+                                    conn.commit()
+                                    conn.close()
+                                    st.warning("⚠️ Submission removed! You can now re-upload.")
+                                    st.rerun()
                         st.divider()
                 else:
                     st.info(f"ℹ️ No homework records found for {matched_student} yet.")
             else:
                 st.error("🔒 Invalid 4-Digit Student PIN!")
 
-# -------------------- 2. PARENT ANALYTICS PORTAL (WITH EFFECTS) --------------------
-elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
-    st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
-    st.info("Welcome! Please enter your 4-digit access PIN to view your daughter's performance and analytics.")
+# ---------------------------------------------------------
+# 2. PARENT ANALYTICS PORTAL VIEW
+# ---------------------------------------------------------
+elif portal_tab == VIEW_PARENT:
+    st.header("👨‍👩‍👧 Parent Analytics Dashboard")
+    st.info("Welcome! Enter your assigned 4-digit PIN (1111 for Nahed, 2222 for Nashwa).")
     
-    parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4)
+    parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4, key="parent_pin_entry")
     
     if parent_pin_input:
         parent_info = PARENT_PINS.get(parent_pin_input)
-        
         if parent_info:
             parent_name, student_name = parent_info
             st.success(f"🔓 Welcome, {parent_name}! Viewing performance report for: **{student_name}**")
             
+            missing_hw = get_missing_assignments(student_name)
+            if missing_hw:
+                st.error("🚨 **UNSUBMITTED / OVERDUE ASSIGNMENTS DETECTED:**")
+                for m_title, m_due in missing_hw:
+                    st.write(f"❌ **{m_title}** was due on **{m_due}** and has **NOT** been submitted yet.")
+                st.divider()
+            
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute('''
-                SELECT assignment_title, estimated_score, final_report, submitted_at 
+                SELECT assignment_title, estimated_score, final_report, submitted_at, is_late 
                 FROM submissions 
                 WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
                 ORDER BY id ASC
             ''', (student_name,))
             p_results = c.fetchall()
+            
+            c.execute('''
+                SELECT assignment_title, submitted_at 
+                FROM submissions 
+                WHERE LOWER(student_name) = LOWER(?) AND is_late = 1 
+                ORDER BY id DESC
+            ''', (student_name,))
+            late_notices = c.fetchall()
             conn.close()
+            
+            if late_notices:
+                st.warning(f"⚠️ **COMPLETED LATE:** {student_name} submitted assignments past deadline:")
+                for l_title, l_time in late_notices:
+                    st.caption(f"• **{l_title}** (Submitted: {l_time})")
+                st.divider()
             
             if p_results:
                 scores = [row[1] for row in p_results]
                 avg_score = sum(scores) / len(scores) if scores else 0
                 latest_score = scores[-1]
                 
-                # ❄️ PARENT CELEBRATION EFFECTS & HIGHLIGHT CARD ❄️
                 if latest_score >= 85.0 or (len(scores) > 1 and scores[-1] > scores[-2]):
                     st.snow()
-                    st.success(f"🎉 **Outstanding Achievement Highlight!** {student_name} scored **{latest_score:.1f}%** on her latest assignment! Great progress!")
+                    st.success(f"🎉 **Achievement Highlight!** {student_name} scored **{latest_score:.1f}%** on her latest assignment!")
                 
                 st.subheader(f"📈 Performance Tracking for {student_name}")
                 chart_data = {row[0]: row[1] for row in p_results}
@@ -298,21 +411,67 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
                 st.divider()
                 st.subheader("⚠️ Detailed Evaluation Reports & Key Takeaways")
                 for row in reversed(p_results):
-                    with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%) - {row[3]}"):
+                    late_tag = " (⚠️ Completed Late)" if row[4] == 1 else ""
+                    with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%){late_tag} - {row[3]}"):
                         st.markdown(row[2])
             else:
                 st.info(f"ℹ️ No approved performance reports found yet for {student_name}.")
         else:
             st.error("🔒 Invalid 4-Digit Parent PIN!")
 
-# -------------------- 3. TEACHER SECURE PORTAL --------------------
-else:
+# ---------------------------------------------------------
+# 3. TEACHER SECURE PORTAL VIEW
+# ---------------------------------------------------------
+elif portal_tab == VIEW_TEACHER:
     st.header("🔒 Teacher Secure Dashboard")
-    pin = st.text_input("Enter Teacher Secret Passcode", type="password")
+    pin = st.text_input("Enter Teacher Secret Passcode", type="password", key="teacher_passcode_entry")
     
     if pin == TEACHER_PIN:
         st.success("🔓 Authorized Teacher Access Granted")
         
+        # --- DEADLINE SETTING CONTROL ---
+        with st.expander("📅 **Set Assignment Deadlines**"):
+            d_title = st.text_input("Assignment Title for Deadline", placeholder="e.g., Ch 3 Osmosis HW")
+            d_date = st.date_input("Due Date")
+            d_time = st.time_input("Due Time", value=datetime.time(23, 59))
+            
+            if st.button("📌 Save Assignment Deadline"):
+                full_due_str = f"{d_date.strftime('%Y-%m-%d')} {d_time.strftime('%H:%M:%S')}"
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO deadlines (assignment_title, due_date) VALUES (?, ?)", (d_title.strip(), full_due_str))
+                conn.commit()
+                conn.close()
+                st.success(f"✅ Deadline set for '{d_title}' at {full_due_str}")
+        
+        # --- OVERDUE & LATE SUBMISSIONS SUMMARY ---
+        with st.expander("🚨 **Missing & Late Submissions Overview**"):
+            st.subheader("Student Submission Compliance Breakdown")
+            for s_pin, s_name in STUDENT_PINS.items():
+                st.markdown(f"### 👤 Student: **{s_name}**")
+                
+                m_hw = get_missing_assignments(s_name)
+                if m_hw:
+                    st.error(f"❌ **Didn't Do Homework ({len(m_hw)} Missing):**")
+                    for m_t, m_d in m_hw:
+                        st.caption(f"• **{m_t}** (Deadline passed on {m_d})")
+                else:
+                    st.success("✅ No overdue unsubmitted homework!")
+                
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("SELECT assignment_title, submitted_at FROM submissions WHERE LOWER(student_name) = LOWER(?) AND is_late = 1", (s_name,))
+                late_hw = c.fetchall()
+                conn.close()
+                
+                if late_hw:
+                    st.warning(f"⚠️ **Completed Late ({len(late_hw)} Submissions):**")
+                    for l_t, l_s in late_hw:
+                        st.caption(f"• **{l_t}** (Submitted on {l_s})")
+                else:
+                    st.info("👍 No late submissions recorded.")
+                st.divider()
+
         st.subheader("⚙️ Cambridge Mark Scheme Instructions Control")
         teacher_instructions = st.text_area(
             "Customize AI evaluation focus:",
@@ -327,11 +486,14 @@ else:
         pending_count = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM submissions WHERE status = 'APPROVED'")
         approved_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM submissions WHERE is_late = 1")
+        late_count = c.fetchone()[0]
         conn.close()
         
-        m1, m2 = st.columns(2)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Pending Reviews ⏳", pending_count)
         m2.metric("Approved Reports ✅", approved_count)
+        m3.metric("Late Submissions ⚠️", late_count)
         st.divider()
         
         dashboard_mode = st.radio(
@@ -344,16 +506,19 @@ else:
         if dashboard_mode == "⏳ Review Pending Submissions & Generate Follow-up Questions":
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
-            c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
+            c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, file_bytes, ai_draft, submitted_at, is_late FROM submissions WHERE status = 'PENDING'")
             pending_list = c.fetchall()
             conn.close()
             
             if pending_list:
-                options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[7]})": row for row in pending_list}
+                options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({'⚠️ LATE' if row[8]==1 else 'ON TIME'})": row for row in pending_list}
                 selected_option = st.selectbox("Select Submission:", list(options.keys()))
                 
                 selected_row = options[selected_option]
-                sub_id, s_name, a_title, f_name, m_type, f_bytes, ai_draft, sub_time = selected_row
+                sub_id, s_name, a_title, f_name, m_type, f_bytes, ai_draft, sub_time, is_late = selected_row
+                
+                if is_late == 1:
+                    st.error(f"🚨 **LATE SUBMISSION NOTIFICATION:** {s_name} submitted this assignment after deadline on {sub_time}.")
                 
                 col_file, col_edit = st.columns([1, 1])
                 
@@ -439,21 +604,34 @@ else:
                 selected_app_option = st.selectbox("Select Approved:", list(approved_options.keys()))
                 app_row = approved_options[selected_app_option]
                 st.markdown(app_row[3])
-                if st.button("🗑️ Delete Permanently"):
-                    conn = sqlite3.connect(DB_FILE)
-                    c = conn.cursor()
-                    c.execute("DELETE FROM submissions WHERE id = ?", (app_row[0],))
-                    conn.commit()
-                    conn.close()
-                    st.warning("Deleted!")
-                    st.rerun()
+                
+                col_act1, col_act2 = st.columns(2)
+                with col_act1:
+                    if st.button("↩️ Disapprove & Return to Pending"):
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute("UPDATE submissions SET status = 'PENDING' WHERE id = ?", (app_row[0],))
+                        conn.commit()
+                        conn.close()
+                        st.info("🔄 Submission reverted back to 'PENDING' status for review.")
+                        st.rerun()
+                        
+                with col_act2:
+                    if st.button("🗑️ Delete Permanently"):
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute("DELETE FROM submissions WHERE id = ?", (app_row[0],))
+                        conn.commit()
+                        conn.close()
+                        st.warning("Deleted!")
+                        st.rerun()
             else:
                 st.info("No approved reports.")
                 
     elif pin != "":
-        st.error("🔒 Incorrect Passcode!")
+        st.error("🔒 Incorrect Teacher Passcode!")
     else:
-        st.info("🔒 Enter teacher passcode.")
+        st.info("🔒 Enter teacher secret passcode.")
        
  
              
