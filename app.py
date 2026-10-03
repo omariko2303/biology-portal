@@ -25,7 +25,6 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# Updated DB filename to prevent schema conflicts with previous versions
 DB_FILE = "homework_portal_v6.db"
 
 # 🔑 Teacher Security Passcode
@@ -309,7 +308,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                                     st.rerun()
                         st.divider()
                 else:
-                    st.info(f"ℹ️️ No homework records found for {matched_student} yet.")
+                    st.info(f"ℹ️ No homework records found for {matched_student} yet.")
             else:
                 st.error("🔒 Invalid 4-Digit Student PIN!")
 
@@ -535,14 +534,28 @@ else:
                 selected_app_option = st.selectbox("Select Approved:", list(approved_options.keys()))
                 app_row = approved_options[selected_app_option]
                 st.markdown(app_row[3])
-                if st.button("🗑️ Delete Permanently"):
-                    conn = sqlite3.connect(DB_FILE)
-                    c = conn.cursor()
-                    c.execute("DELETE FROM submissions WHERE id = ?", (app_row[0],))
-                    conn.commit()
-                    conn.close()
-                    st.warning("Deleted!")
-                    st.rerun()
+                
+                col_act1, col_act2 = st.columns(2)
+                with col_act1:
+                    # ↩️ DISAPPROVE / REVERT TO PENDING ACTION
+                    if st.button("↩️ Disapprove & Return to Pending"):
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute("UPDATE submissions SET status = 'PENDING' WHERE id = ?", (app_row[0],))
+                        conn.commit()
+                        conn.close()
+                        st.info("🔄 Submission reverted back to 'PENDING' status for review.")
+                        st.rerun()
+                        
+                with col_act2:
+                    if st.button("🗑️ Delete Permanently"):
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute("DELETE FROM submissions WHERE id = ?", (app_row[0],))
+                        conn.commit()
+                        conn.close()
+                        st.warning("Deleted!")
+                        st.rerun()
             else:
                 st.info("No approved reports.")
                 
