@@ -4,7 +4,6 @@ import datetime
 import io
 import google.generativeai as genai
 
-# ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
     page_title="IGCSE Biology Assessment & Analytics Portal",
     page_icon="🧬",
@@ -12,6 +11,16 @@ st.set_page_config(
 )
 
 DB_FILE = "homework_portal_v5.db"
+
+# Define Security PINs
+PARENT_PIN = "Omar_Parent_2026"
+TEACHER_PIN = "Omar_Biology_2026_Secure"
+
+# Student PINs dictionary (You can change names and PINs here)
+STUDENT_PINS = {
+    "Lara": "Lara_2026",
+    "Student Two": "Student2_2026"
+}
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -88,7 +97,6 @@ def extract_score_from_text(report_text):
             return 75.0
     return 75.0
 
-# ==================== MAIN UI ====================
 st.title("🧬 IGCSE Biology Assessment & Analytics Portal")
 
 portal_tab = st.selectbox(
@@ -110,7 +118,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
         st.subheader("Upload New Assignment")
         col1, col2 = st.columns(2)
         with col1:
-            student_name = st.text_input("Student Full Name", placeholder="e.g., Lara")
+            student_name = st.selectbox("Select Student Name", list(STUDENT_PINS.keys()))
         with col2:
             assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
             
@@ -120,7 +128,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
         )
         
         if st.button("🚀 Submit Homework", type="primary"):
-            if not student_name or not assignment_title or not uploaded_file:
+            if not assignment_title or not uploaded_file:
                 st.error("❌ Please fill in all fields and upload a file.")
             else:
                 with st.spinner("Analyzing your homework with Cambridge AI Standards..."):
@@ -151,10 +159,15 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                         
     with s_tab2:
         st.subheader("Check Your Approved Grades & Teacher Corrections")
-        search_name = st.text_input("Enter Your Name for Lookup", key="student_lookup")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            login_student = st.selectbox("Select Your Profile", list(STUDENT_PINS.keys()), key="login_student_select")
+        with col_s2:
+            student_passcode = st.text_input("Enter Your Student PIN", type="password", key="student_pin_input")
         
-        if st.button("🔍 Search Submissions"):
-            if search_name.strip():
+        if st.button("🔍 View My Results"):
+            if student_passcode == STUDENT_PINS.get(login_student):
+                st.success(f"🔓 Welcome back, {login_student}!")
                 conn = sqlite3.connect(DB_FILE)
                 c = conn.cursor()
                 c.execute('''
@@ -162,7 +175,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                     FROM submissions 
                     WHERE LOWER(student_name) = LOWER(?)
                     ORDER BY id DESC
-                ''', (search_name.strip(),))
+                ''', (login_student,))
                 results = c.fetchall()
                 conn.close()
                 
@@ -184,7 +197,11 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                             st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** by your teacher.")
                         st.divider()
                 else:
-                    st.info("ℹ️ No records found.")
+                    st.info("ℹ️ No records found for your profile.")
+            elif student_passcode != "":
+                st.error("🔒 Incorrect Student PIN!")
+            else:
+                st.info("🔒 Please enter your student PIN.")
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
 elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)":
@@ -192,13 +209,12 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
     st.info("مرحباً بك أستاذنا ولي الأمر. تتيح لك هذه البوابة متابعة تقدم مستوى ابنك/ابنتك، درجات الواجبات، وتحليلات الأداء بدقة.")
     
     parent_passcode = st.text_input("Enter Parent Access PIN", type="password")
-    PARENT_PIN = "Omar_Parent_2026"
     
     if parent_passcode == PARENT_PIN:
         st.success("🔓 Parent Access Authorized")
-        p_student_name = st.text_input("Enter Student Full Name to View Analytics:")
+        p_student_name = st.selectbox("Select Student to View Analytics:", list(STUDENT_PINS.keys()))
         
-        if p_student_name.strip():
+        if p_student_name:
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute('''
@@ -206,7 +222,7 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
                 FROM submissions 
                 WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
                 ORDER BY id ASC
-            ''', (p_student_name.strip(),))
+            ''', (p_student_name,))
             p_results = c.fetchall()
             conn.close()
             
@@ -227,7 +243,7 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
                     with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%) - {row[3]}"):
                         st.markdown(row[2])
             else:
-                st.info("ℹ️️ لا توجد تقارير معتمدة حتى الآن لهذا الطالب.")
+                st.info("ℹ️ لا توجد تقارير معتمدة حتى الآن لهذا الطالب.")
     elif parent_passcode != "":
         st.error("🔒 Incorrect Parent PIN!")
     else:
@@ -237,7 +253,6 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
 else:
     st.header("🔒 Teacher Secure Dashboard")
     pin = st.text_input("Enter Teacher Secret Passcode", type="password")
-    TEACHER_PIN = "Omar_Biology_2026_Secure"
     
     if pin == TEACHER_PIN:
         st.success("🔓 Authorized Teacher Access Granted")
@@ -298,7 +313,7 @@ else:
                     corrected_file_upload = st.file_uploader("Upload corrected notes", type=["pdf", "png", "jpg"], key=f"up_{sub_id}")
                 
                 with col_edit:
-                    st.subheader("✏️ Edit AI Report & AI Follow-up Questions Generator")
+                    st.subheader("✏️️ Edit AI Report & AI Follow-up Questions Generator")
                     final_report_input = st.text_area("Refine Report:", value=ai_draft, height=400)
                     
                     if st.button("💡 Generate AI Follow-up Questions for Next Session"):
@@ -341,7 +356,7 @@ else:
                 selected_app_option = st.selectbox("Select Approved:", list(approved_options.keys()))
                 app_row = approved_options[selected_app_option]
                 st.markdown(app_row[3])
-                if st.button("🗑 Delete Permanently"):
+                if st.button("🗑️ Delete Permanently"):
                     conn = sqlite3.connect(DB_FILE)
                     c = conn.cursor()
                     c.execute("DELETE FROM submissions WHERE id = ?", (app_row[0],))
