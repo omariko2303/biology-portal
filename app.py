@@ -27,16 +27,16 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 DB_FILE = "homework_portal_v6.db"
 
-# 🔑 Teacher Secret Passcode (String Password)
+# 🔑 Teacher Security Passcode (Full Password)
 TEACHER_PIN = "Omar_Biology_2026_Secure"
 
-# 🔑 4-Digit Student PIN Mapping (PIN -> Student Name)
+# 🔑 4-Digit Student PIN Mapping
 STUDENT_PINS = {
     "1234": "Alia",
     "5678": "Lara"
 }
 
-# 🔑 4-Digit Parent PIN Mapping (PIN -> (Parent Name, Linked Student Name))
+# 🔑 4-Digit Parent PIN Mapping
 PARENT_PINS = {
     "1111": ("Nahed", "Alia"),
     "2222": ("Nashwa", "Lara")
@@ -54,7 +54,6 @@ MOTIVATIONAL_QUOTES = [
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Table for Submissions
     c.execute('''
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,7 +73,6 @@ def init_db():
             is_late INTEGER DEFAULT 0
         )
     ''')
-    # Table for Deadlines
     c.execute('''
         CREATE TABLE IF NOT EXISTS deadlines (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +81,6 @@ def init_db():
         )
     ''')
     
-    # Safe migration check for existing tables missing 'is_late'
     c.execute("PRAGMA table_info(submissions)")
     columns = [col[1] for col in c.fetchall()]
     if "is_late" not in columns:
@@ -144,7 +141,6 @@ def extract_score_from_text(report_text):
     return 75.0
 
 def get_missing_assignments(student_name):
-    """Find assignments where deadline has passed and student hasn't submitted."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT assignment_title, due_date FROM deadlines")
@@ -169,22 +165,22 @@ def get_missing_assignments(student_name):
 
 st.title("🧬 IGCSE Biology Assessment & Analytics Portal")
 
+# 📌 Define navigation choices clearly to prevent emoji mismatch bugs
+VIEW_STUDENT = "📤 Student Portal (Submit & View Results)"
+VIEW_PARENT = "👨‍👩‍👧 Parent Analytics Dashboard"
+VIEW_TEACHER = "🔒 Teacher Secure Portal"
+
 portal_tab = st.selectbox(
     "Select Portal View:",
-    [
-        "📤 Student Portal (Submit & View Results)", 
-        "👨‍👩‍👧 Parent Analytics Dashboard", 
-        "🔒 Teacher Secure Portal"
-    ]
+    [VIEW_STUDENT, VIEW_PARENT, VIEW_TEACHER]
 )
 
 # -------------------- 1. STUDENT PORTAL --------------------
-if portal_tab == "📤 Student Portal (Submit & View Results)":
+if portal_tab == VIEW_STUDENT:
     st.header("Student Portal")
     
     s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Manage Submissions"])
     
-    # --- SUBMIT HOMEWORK TAB ---
     with s_tab1:
         st.subheader("Upload New Assignment")
         
@@ -260,7 +256,6 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
         else:
             st.info("🔑 Please enter your 4-digit PIN to upload your homework.")
 
-    # --- VIEW RESULTS & UNSUBMIT TAB ---
     with s_tab2:
         st.subheader("🔒 View Performance & Manage Submissions")
         entered_student_pin = st.text_input("Enter Your 4-Digit PIN", type="password", max_chars=4, key="student_pin_view")
@@ -334,9 +329,9 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 st.error("🔒 Invalid 4-Digit Student PIN!")
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
-elif portal_tab == "👨‍‍‍👩‍👧 Parent Analytics Dashboard":
-    st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
-    st.info("Welcome! Please enter your 4-digit parent access PIN (e.g., 1111 for Nahed, 2222 for Nashwa).")
+elif portal_tab == VIEW_PARENT:
+    st.header("👨‍👩‍👧 Parent Analytics Dashboard")
+    st.info("Welcome! Please enter your 4-digit parent access PIN (1111 for Nahed, 2222 for Nashwa).")
     
     parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4, key="parent_pin_entry")
     
@@ -409,9 +404,8 @@ elif portal_tab == "👨‍‍‍👩‍👧 Parent Analytics Dashboard":
             st.error("🔒 Invalid 4-Digit Parent PIN!")
 
 # -------------------- 3. TEACHER SECURE PORTAL --------------------
-else:
+elif portal_tab == VIEW_TEACHER:
     st.header("🔒 Teacher Secure Dashboard")
-    # Teacher login requires full text password (no max_chars restriction)
     pin = st.text_input("Enter Teacher Secret Passcode", type="password", key="teacher_passcode_entry")
     
     if pin == TEACHER_PIN:
@@ -617,9 +611,9 @@ else:
                 st.info("No approved reports.")
                 
     elif pin != "":
-        st.error("🔒 Incorrect Teacher Secret Passcode!")
+        st.error("🔒 Incorrect Teacher Passcode!")
     else:
-        st.info("🔒 Enter teacher secret passcode (`Omar_Biology_2026_Secure`).")
+        st.info("🔒 Enter teacher secret passcode.")
        
  
              
