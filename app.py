@@ -23,8 +23,8 @@ STUDENT_PINS = {
 
 # 🔑 4-Digit Parent PIN Mapping (PIN -> (Parent Name, Linked Student Name))
 PARENT_PINS = {
-    "1111": ("Nashwa", "Alia"),
-    "2222": ("Nahed", "Lara")
+    "1111": ("Nahed", "Alia"),
+    "2222": ("Nashwa", "Lara")
 }
 
 def init_db():
@@ -108,7 +108,7 @@ portal_tab = st.selectbox(
     "Select Portal View:",
     [
         "📤 Student Portal (Submit & View Results)", 
-        "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)", 
+        "👨‍👩‍‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)", 
         "🔒 Teacher Secure Portal (لوحة تحكم المعلم)"
     ]
 )
