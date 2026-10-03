@@ -12,14 +12,19 @@ st.set_page_config(
 
 DB_FILE = "homework_portal_v5.db"
 
-# Define Security PINs
-PARENT_PIN = "Omar_Parent_2026"
+# 🔑 Teacher Security Passcode
 TEACHER_PIN = "Omar_Biology_2026_Secure"
 
-# Student Unique PINs (Each student has their own private PIN)
+# 🔑 4-Digit Student PIN Mapping (PIN -> Student Name)
 STUDENT_PINS = {
-    "Lara": "Lara_2026",
-    "Student Two": "Student2_2026"
+    "1234": "Alia",
+    "5678": "Lara"
+}
+
+# 🔑 4-Digit Parent PIN Mapping (PIN -> (Parent Name, Linked Student Name))
+PARENT_PINS = {
+    "1111": ("Nashwa", "Alia"),
+    "2222": ("Nahed", "Lara")
 }
 
 def init_db():
@@ -112,13 +117,13 @@ portal_tab = st.selectbox(
 if portal_tab == "📤 Student Portal (Submit & View Results)":
     st.header("Student Portal")
     
-    s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Feedback"])
+    s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Performance"])
     
     with s_tab1:
         st.subheader("Upload New Assignment")
         col1, col2 = st.columns(2)
         with col1:
-            student_name = st.selectbox("Select Your Name", list(STUDENT_PINS.keys()))
+            student_name = st.selectbox("Select Your Name", ["Alia", "Lara"])
         with col2:
             assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
             
@@ -158,19 +163,14 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                         st.error(f"⚠️ Error: {e}")
                         
     with s_tab2:
-        st.subheader("Check Your Approved Grades & Teacher Corrections")
-        entered_student_pin = st.text_input("Enter Your Personal Student PIN", type="password", key="student_unique_pin")
+        st.subheader("🔒 Student Login")
+        entered_student_pin = st.text_input("Enter Your 4-Digit PIN", type="password", max_chars=4, key="student_pin_input")
         
         if entered_student_pin:
-            # Automatically identify the student based on their unique PIN
-            matched_student = None
-            for s_name, s_pin in STUDENT_PINS.items():
-                if entered_student_pin == s_pin:
-                    matched_student = s_name
-                    break
+            matched_student = STUDENT_PINS.get(entered_student_pin)
             
             if matched_student:
-                st.success(f"🔓 Welcome back, {matched_student}! Here are your private results:")
+                st.success(f"🔓 Welcome back, {matched_student}!")
                 conn = sqlite3.connect(DB_FILE)
                 c = conn.cursor()
                 c.execute('''
@@ -183,6 +183,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 conn.close()
                 
                 if results:
+                    st.subheader(f"📊 Assessment Performance & Reports for {matched_student}")
                     for row in results:
                         a_title, report, t_bytes, t_name, t_mime, status, sub_time = row
                         if status == 'APPROVED':
@@ -200,22 +201,24 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                             st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** by your teacher.")
                         st.divider()
                 else:
-                    st.info("ℹ️ No records found for your profile yet.")
+                    st.info(f"ℹ️ No homework records found for {matched_student} yet.")
             else:
-                st.error("🔒 Incorrect Student PIN! Please check your personal PIN.")
+                st.error("🔒 Invalid 4-Digit Student PIN!")
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
 elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)":
-    st.header("👨‍👩‍‍👧 Parent Analytics & Performance Portal")
-    st.info("مرحباً بك أستاذنا ولي الأمر. تتيح لك هذه البوابة متابعة تقدم مستوى ابنك/ابنتك، درجات الواجبات، وتحليلات الأداء بدقة.")
+    st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
+    st.info("مرحباً بك أستاذنا ولي الأمر. يرجى إدخال رمز الدخول المكون من 4 أرقام لمتابعة أداء ابنك/ابنتك.")
     
-    parent_passcode = st.text_input("Enter Parent Access PIN", type="password")
+    parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4)
     
-    if parent_passcode == PARENT_PIN:
-        st.success("🔓 Parent Access Authorized")
-        p_student_name = st.selectbox("Select Student to View Analytics:", list(STUDENT_PINS.keys()))
+    if parent_pin_input:
+        parent_info = PARENT_PINS.get(parent_pin_input)
         
-        if p_student_name:
+        if parent_info:
+            parent_name, student_name = parent_info
+            st.success(f"🔓 أهلاً بكِ أ/ {parent_name} - تقرير متابعة الطالبة: {student_name}")
+            
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute('''
@@ -223,12 +226,12 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
                 FROM submissions 
                 WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
                 ORDER BY id ASC
-            ''', (p_student_name,))
+            ''', (student_name,))
             p_results = c.fetchall()
             conn.close()
             
             if p_results:
-                st.subheader(f"📈 Performance Tracking for: {p_student_name}")
+                st.subheader(f"📈 Performance Tracking for {student_name}")
                 chart_data = {row[0]: row[1] for row in p_results}
                 st.line_chart(chart_data)
                 
@@ -239,16 +242,14 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
                 m2.metric("Total Completed Assignments 📝", len(p_results))
                 
                 st.divider()
-                st.subheader("⚠️ Personalized Error Bank & Weaknesses to Focus On")
+                st.subheader("⚠️ Detailed Reports & Weaknesses")
                 for row in p_results:
                     with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%) - {row[3]}"):
                         st.markdown(row[2])
             else:
-                st.info("ℹ️ لا توجد تقارير معتمدة حتى الآن لهذا الطالب.")
-    elif parent_passcode != "":
-        st.error("🔒 Incorrect Parent PIN!")
-    else:
-        st.info("🔒 Please enter the parent PIN provided by your tutor Omar.")
+                st.info(f"ℹ️ لا توجد تقارير معتمدة حتى الآن للطالبة {student_name}.")
+        else:
+            st.error("🔒 Invalid 4-Digit Parent PIN!")
 
 # -------------------- 3. TEACHER SECURE PORTAL --------------------
 else:
