@@ -25,7 +25,8 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-DB_FILE = "homework_portal_v5.db"
+# Updated DB filename to prevent schema conflicts with previous versions
+DB_FILE = "homework_portal_v6.db"
 
 # 🔑 Teacher Security Passcode
 TEACHER_PIN = "Omar_Biology_2026_Secure"
@@ -82,6 +83,13 @@ def init_db():
             due_date TEXT
         )
     ''')
+    
+    # Safe migration check for existing tables missing 'is_late'
+    c.execute("PRAGMA table_info(submissions)")
+    columns = [col[1] for col in c.fetchall()]
+    if "is_late" not in columns:
+        c.execute("ALTER TABLE submissions ADD COLUMN is_late INTEGER DEFAULT 0")
+        
     conn.commit()
     conn.close()
 
@@ -142,7 +150,7 @@ portal_tab = st.selectbox(
     "Select Portal View:",
     [
         "📤 Student Portal (Submit & View Results)", 
-        "👨‍‍👩‍👧 Parent Analytics Dashboard", 
+        "👨‍👩‍👧 Parent Analytics Dashboard", 
         "🔒 Teacher Secure Portal"
     ]
 )
@@ -301,7 +309,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                                     st.rerun()
                         st.divider()
                 else:
-                    st.info(f"ℹ️ No homework records found for {matched_student} yet.")
+                    st.info(f"ℹ️️ No homework records found for {matched_student} yet.")
             else:
                 st.error("🔒 Invalid 4-Digit Student PIN!")
 
