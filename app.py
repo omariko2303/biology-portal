@@ -348,7 +348,6 @@ if portal_tab == VIEW_STUDENT:
 # ---------------------------------------------------------
 elif portal_tab == VIEW_PARENT:
     st.header("👨‍👩‍👧 Parent Analytics Dashboard")
-    st.info("Welcome! Enter your assigned 4-digit PIN (1111 for Nahed, 2222 for Nashwa).")
     
     parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4, key="parent_pin_entry")
     
@@ -418,6 +417,8 @@ elif portal_tab == VIEW_PARENT:
                 st.info(f"ℹ️ No approved performance reports found yet for {student_name}.")
         else:
             st.error("🔒 Invalid 4-Digit Parent PIN!")
+    else:
+        st.info("🔑 Welcome! Please enter your assigned 4-digit PIN to access your child's dashboard.")
 
 # ---------------------------------------------------------
 # 3. TEACHER SECURE PORTAL VIEW
@@ -472,7 +473,7 @@ elif portal_tab == VIEW_TEACHER:
                     st.info("👍 No late submissions recorded.")
                 st.divider()
 
-        st.subheader("⚙️ Cambridge Mark Scheme Instructions Control")
+        st.subheader("⚙️️ Cambridge Mark Scheme Instructions Control")
         teacher_instructions = st.text_area(
             "Customize AI evaluation focus:",
             value=DEFAULT_CAMBRIDGE_INSTRUCTIONS,
