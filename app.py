@@ -122,7 +122,7 @@ portal_tab = st.selectbox(
     "Select Portal View:",
     [
         "📤 Student Portal (Submit & View Results)", 
-        "👨‍👩‍‍👧 Parent Analytics Dashboard", 
+        "👨‍‍👩‍👧 Parent Analytics Dashboard", 
         "🔒 Teacher Secure Portal"
     ]
 )
@@ -149,29 +149,24 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 uploaded_file = st.file_uploader(
                     "Upload Homework File (PDF, PNG, JPG)", 
                     type=["pdf", "png", "jpg", "jpeg"]
-              if st.button("🚀 Submit Homework", type="primary"):
-    if not assignment_title or not uploaded_file:
-        st.error("❌ Please provide an assignment title and upload a file.")
-    else:
-        # Direct database save with zero AI waiting time
-        file_bytes = uploaded_file.read()
-        file_name = uploaded_file.name
-        mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO submissions 
-            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now))
-        conn.commit()
-        conn.close()
-        
-        st.balloons()
-        st.success(f"⚡ Homework submitted instantly for {matched_student}! Your teacher will review and grade it soon.")
-                        ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, now))
+                )
+                
+                if st.button("🚀 Submit Homework", type="primary"):
+                    if not assignment_title or not uploaded_file:
+                        st.error("❌ Please provide an assignment title and upload a file.")
+                    else:
+                        file_bytes = uploaded_file.read()
+                        file_name = uploaded_file.name
+                        mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute('''
+                            INSERT INTO submissions 
+                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now))
                         conn.commit()
                         conn.close()
                         
@@ -228,7 +223,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
 elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
-    st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
+    st.header("👨‍👩‍‍👧 Parent Analytics & Performance Portal")
     st.info("Welcome! Please enter your 4-digit access PIN to view your daughter's performance and analytics.")
     
     parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4)
@@ -338,7 +333,6 @@ else:
                 with col_edit:
                     st.subheader("✏️ AI Report Generation & Editing")
                     
-                    # On-demand AI draft generation for teacher
                     if not ai_draft:
                         if st.button("⚡ Generate AI Draft Report (Gemini 3.8-Flash)", type="secondary"):
                             with st.spinner("Analyzing submission with Gemini 3.8-Flash..."):
@@ -358,7 +352,11 @@ else:
                                 except Exception as e:
                                     st.error(f"⚠️ Error generating draft: {e}")
                     
-                    final_report_input = st.text_area("Refine Report:", value=ai_draft if ai_draft else "Click 'Generate AI Draft Report' above to auto-generate...", height=400)
+                    final_report_input = st.text_area(
+                        "Refine Report:", 
+                        value=ai_draft if ai_draft else "Click 'Generate AI Draft Report' above to auto-generate...", 
+                        height=400
+                    )
                     
                     if st.button("💡 Generate AI Follow-up Questions for Next Session"):
                         if not final_report_input or final_report_input.startswith("Click 'Generate"):
@@ -418,7 +416,6 @@ else:
         st.error("🔒 Incorrect Passcode!")
     else:
         st.info("🔒 Enter teacher passcode.")
-        
        
  
              
