@@ -27,7 +27,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 DB_FILE = "homework_portal_v6.db"
 
-# 🔑 Teacher Security Passcode (String Password)
+# 🔑 Teacher Secret Passcode (String Password)
 TEACHER_PIN = "Omar_Biology_2026_Secure"
 
 # 🔑 4-Digit Student PIN Mapping (PIN -> Student Name)
@@ -83,7 +83,7 @@ def init_db():
         )
     ''')
     
-    # Migration check for existing tables missing 'is_late'
+    # Safe migration check for existing tables missing 'is_late'
     c.execute("PRAGMA table_info(submissions)")
     columns = [col[1] for col in c.fetchall()]
     if "is_late" not in columns:
@@ -256,7 +256,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                             
                         st.info(f"💡 **Exam Tip & Motivation:**\n\n{selected_quote}")
             else:
-                st.error("🔒 Invalid 4-Digit PIN! Please check your code.")
+                st.error("🔒 Invalid 4-Digit Student PIN!")
         else:
             st.info("🔑 Please enter your 4-digit PIN to upload your homework.")
 
@@ -334,9 +334,9 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 st.error("🔒 Invalid 4-Digit Student PIN!")
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
-elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
+elif portal_tab == "👨‍‍‍👩‍👧 Parent Analytics Dashboard":
     st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
-    st.info("Welcome! Please enter your 4-digit access PIN to view your daughter's performance and analytics.")
+    st.info("Welcome! Please enter your 4-digit parent access PIN (e.g., 1111 for Nahed, 2222 for Nashwa).")
     
     parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4, key="parent_pin_entry")
     
@@ -411,6 +411,7 @@ elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
 # -------------------- 3. TEACHER SECURE PORTAL --------------------
 else:
     st.header("🔒 Teacher Secure Dashboard")
+    # Teacher login requires full text password (no max_chars restriction)
     pin = st.text_input("Enter Teacher Secret Passcode", type="password", key="teacher_passcode_entry")
     
     if pin == TEACHER_PIN:
@@ -616,9 +617,9 @@ else:
                 st.info("No approved reports.")
                 
     elif pin != "":
-        st.error("🔒 Incorrect Teacher Passcode!")
+        st.error("🔒 Incorrect Teacher Secret Passcode!")
     else:
-        st.info("🔒 Enter teacher secret passcode.")
+        st.info("🔒 Enter teacher secret passcode (`Omar_Biology_2026_Secure`).")
        
  
              
