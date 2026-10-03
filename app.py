@@ -39,7 +39,6 @@ def init_db():
 
 init_db()
 
-# المعايير الافتراضية لكامبريدج #
 DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
     "Strictly enforce Cambridge Mark Scheme keywords: "
     "1. Diffusion must include 'net movement', 'higher to lower concentration', 'concentration gradient', 'random movement'. "
@@ -67,7 +66,7 @@ Instructions & Mark Scheme Standard: {instructions}
 Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format, and on the very first line provide an estimated numeric percentage score or raw mark out of total (e.g., [SCORE: 85%]). Structure:
 1. **[SCORE: XX%] Executive Summary & Grade Equivalent**
 2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
-3. **Specific Biological Misconceptions & Errors Identified** (List key missing keywords or errors clearly for an error bank)
+3. **Specific Biological Misconceptions & Errors Identified**
 4. **Actionable Next Steps for Improvement**
 """
 
@@ -87,12 +86,11 @@ def extract_score_from_text(report_text):
             return float(match.group(1))
         except:
             return 75.0
-    return 75.0  افتراضي في حال عدم المطابقة
+    return 75.0
 
 # ==================== MAIN UI ====================
 st.title("🧬 IGCSE Biology Assessment & Analytics Portal")
 
-# توزيع البوابات الرئيسية (طالب، ولي أمر، معلم)
 portal_tab = st.selectbox(
     "Select Portal View:",
     [
@@ -194,7 +192,7 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
     st.info("مرحباً بك أستاذنا ولي الأمر. تتيح لك هذه البوابة متابعة تقدم مستوى ابنك/ابنتك، درجات الواجبات، وتحليلات الأداء بدقة.")
     
     parent_passcode = st.text_input("Enter Parent Access PIN", type="password")
-    PARENT_PIN = "Omar_Parent_2026"  # رمز خاص بولي الأمر
+    PARENT_PIN = "Omar_Parent_2026"
     
     if parent_passcode == PARENT_PIN:
         st.success("🔓 Parent Access Authorized")
@@ -214,8 +212,6 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
             
             if p_results:
                 st.subheader(f"📈 Performance Tracking for: {p_student_name}")
-                
-                # استخراج وتجهيز بيانات الرسم البياني وتتبع التقدم
                 chart_data = {row[0]: row[1] for row in p_results}
                 st.line_chart(chart_data)
                 
@@ -227,13 +223,11 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
                 
                 st.divider()
                 st.subheader("⚠️ Personalized Error Bank & Weaknesses to Focus On")
-                st.markdown("يوضح هذا القسم أبرز المفاهيم التي تم رصدها وتحتاج تركيزاً إضافياً من الطالب بناءً على تقارير كامبريدج:")
-                
                 for row in p_results:
                     with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%) - {row[3]}"):
                         st.markdown(row[2])
             else:
-                st.info("ℹ️ لا توجد تقارير معتمدة حتى الآن لهذا الطالب.")
+                st.info("ℹ️️ لا توجد تقارير معتمدة حتى الآن لهذا الطالب.")
     elif parent_passcode != "":
         st.error("🔒 Incorrect Parent PIN!")
     else:
@@ -307,7 +301,6 @@ else:
                     st.subheader("✏️ Edit AI Report & AI Follow-up Questions Generator")
                     final_report_input = st.text_area("Refine Report:", value=ai_draft, height=400)
                     
-                    # ميزة توليد أسئلة متابعة مقترحة للحصة القادمة
                     if st.button("💡 Generate AI Follow-up Questions for Next Session"):
                         with st.spinner("Generating targeted Past Paper questions..."):
                             fu_model = genai.GenerativeModel("gemini-3.8-flash")
