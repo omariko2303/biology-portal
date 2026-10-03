@@ -143,6 +143,30 @@ def extract_score_from_text(report_text):
             return 75.0
     return 75.0
 
+def get_missing_assignments(student_name):
+    """Find assignments where deadline has passed and student hasn't submitted."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT assignment_title, due_date FROM deadlines")
+    all_deadlines = c.fetchall()
+    
+    c.execute("SELECT LOWER(assignment_title) FROM submissions WHERE LOWER(student_name) = LOWER(?)", (student_name,))
+    submitted_titles = set(row[0] for row in c.fetchall())
+    conn.close()
+    
+    missing = []
+    now_dt = datetime.datetime.now()
+    
+    for d_title, d_date_str in all_deadlines:
+        if d_title.lower().strip() not in submitted_titles:
+            try:
+                due_dt = datetime.datetime.strptime(d_date_str, "%Y-%m-%d %H:%M:%S")
+                if now_dt > due_dt:
+                    missing.append((d_title, d_date_str))
+            except:
+                pass
+    return missing
+
 st.title("🧬 IGCSE Biology Assessment & Analytics Portal")
 
 portal_tab = st.selectbox(
@@ -313,7 +337,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 st.error("🔒 Invalid 4-Digit Student PIN!")
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
-elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
+elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
     st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
     st.info("Welcome! Please enter your 4-digit access PIN to view your daughter's performance and analytics.")
     
@@ -326,6 +350,14 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
             parent_name, student_name = parent_info
             st.success(f"🔓 Welcome, {parent_name}! Viewing performance report for: **{student_name}**")
             
+            # Check missing/overdue assignments
+            missing_hw = get_missing_assignments(student_name)
+            if missing_hw:
+                st.error(f"🚨 **UNSUBMITTED / OVERDUE ASSIGNMENTS DETECTED:**")
+                for m_title, m_due in missing_hw:
+                    st.write(f"❌ **{m_title}** was due on **{m_due}** and has **NOT** been submitted yet.")
+                st.divider()
+            
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute('''
@@ -336,19 +368,22 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
             ''', (student_name,))
             p_results = c.fetchall()
             
-            # Check for recent late submissions
+            # Check for late submissions
             c.execute('''
                 SELECT assignment_title, submitted_at 
                 FROM submissions 
                 WHERE LOWER(student_name) = LOWER(?) AND is_late = 1 
-                ORDER BY id DESC LIMIT 1
+                ORDER BY id DESC
             ''', (student_name,))
-            late_notice = c.fetchone()
+            late_notices = c.fetchall()
             conn.close()
             
-            # 🔔 LATE SUBMISSION PARENT NOTIFICATION BANNER
-            if late_notice:
-                st.error(f"🔔 **Notification:** {student_name} submitted **{late_notice[0]}** after the set deadline ({late_notice[1]}).")
+            # 🔔 LATE SUBMISSION NOTIFICATIONS
+            if late_notices:
+                st.warning(f"⚠️️ **COMPLETED LATE:** {student_name} submitted the following assignments past the deadline:")
+                for l_title, l_time in late_notices:
+                    st.caption(f"• **{l_title}** (Submitted on {l_time})")
+                st.divider()
             
             if p_results:
                 scores = [row[1] for row in p_results]
@@ -371,7 +406,7 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
                 st.divider()
                 st.subheader("⚠️ Detailed Evaluation Reports & Key Takeaways")
                 for row in reversed(p_results):
-                    late_tag = " (⚠️ Submitted Late)" if row[4] == 1 else ""
+                    late_tag = " (⚠️ Completed Late)" if row[4] == 1 else ""
                     with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%){late_tag} - {row[3]}"):
                         st.markdown(row[2])
             else:
@@ -402,6 +437,36 @@ else:
                 conn.close()
                 st.success(f"✅ Deadline set for '{d_title}' at {full_due_str}")
         
+        # --- OVERDUE & LATE SUBMISSIONS SUMMARY ---
+        with st.expander("🚨 **Missing & Late Submissions Overview**"):
+            st.subheader("Student Submission Compliance Breakdown")
+            for s_pin, s_name in STUDENT_PINS.items():
+                st.markdown(f"### 👤 Student: **{s_name}**")
+                
+                # Missing HW
+                m_hw = get_missing_assignments(s_name)
+                if m_hw:
+                    st.error(f"❌ **Didn't Do Homework ({len(m_hw)} Missing):**")
+                    for m_t, m_d in m_hw:
+                        st.caption(f"• **{m_t}** (Deadline passed on {m_d})")
+                else:
+                    st.success("✅ No overdue unsubmitted homework!")
+                
+                # Late Submissions
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("SELECT assignment_title, submitted_at FROM submissions WHERE LOWER(student_name) = LOWER(?) AND is_late = 1", (s_name,))
+                late_hw = c.fetchall()
+                conn.close()
+                
+                if late_hw:
+                    st.warning(f"⚠️ **Completed Late ({len(late_hw)} Submissions):**")
+                    for l_t, l_s in late_hw:
+                        st.caption(f"• **{l_t}** (Submitted on {l_s})")
+                else:
+                    st.info("👍 No late submissions recorded.")
+                st.divider()
+
         st.subheader("⚙️ Cambridge Mark Scheme Instructions Control")
         teacher_instructions = st.text_area(
             "Customize AI evaluation focus:",
