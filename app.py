@@ -149,24 +149,28 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 uploaded_file = st.file_uploader(
                     "Upload Homework File (PDF, PNG, JPG)", 
                     type=["pdf", "png", "jpg", "jpeg"]
-                )
-                
-                if st.button("🚀 Submit Homework", type="primary"):
-                    if not assignment_title or not uploaded_file:
-                        st.error("❌ Please provide an assignment title and upload a file.")
-                    else:
-                        # Direct database save with zero AI waiting time
-                        file_bytes = uploaded_file.read()
-                        file_name = uploaded_file.name
-                        mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute('''
-                            INSERT INTO submissions 
-                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
-                            VALUES (?, ?, ?, ?, ?, '', '', 0.0, None, '', '', 'PENDING', ?)
+              if st.button("🚀 Submit Homework", type="primary"):
+    if not assignment_title or not uploaded_file:
+        st.error("❌ Please provide an assignment title and upload a file.")
+    else:
+        # Direct database save with zero AI waiting time
+        file_bytes = uploaded_file.read()
+        file_name = uploaded_file.name
+        mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO submissions 
+            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now))
+        conn.commit()
+        conn.close()
+        
+        st.balloons()
+        st.success(f"⚡ Homework submitted instantly for {matched_student}! Your teacher will review and grade it soon.")
                         ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, now))
                         conn.commit()
                         conn.close()
