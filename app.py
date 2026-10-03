@@ -39,7 +39,7 @@ def init_db():
 
 init_db()
 
-# المعايير الافتراضية لكامبريدج
+# المعايير الافتراضية لكامبريدج #
 DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
     "Strictly enforce Cambridge Mark Scheme keywords: "
     "1. Diffusion must include 'net movement', 'higher to lower concentration', 'concentration gradient', 'random movement'. "
