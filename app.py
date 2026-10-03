@@ -27,7 +27,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 DB_FILE = "homework_portal_v6.db"
 
-# 🔑 Teacher Security Passcode
+# 🔑 Teacher Security Passcode (String Password)
 TEACHER_PIN = "Omar_Biology_2026_Secure"
 
 # 🔑 4-Digit Student PIN Mapping (PIN -> Student Name)
@@ -83,7 +83,7 @@ def init_db():
         )
     ''')
     
-    # Safe migration check for existing tables missing 'is_late'
+    # Migration check for existing tables missing 'is_late'
     c.execute("PRAGMA table_info(submissions)")
     columns = [col[1] for col in c.fetchall()]
     if "is_late" not in columns:
@@ -196,7 +196,6 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
             if matched_student:
                 st.success(f"🔓 Authenticated as: **{matched_student}**")
                 
-                # Fetch deadlines
                 conn = sqlite3.connect(DB_FILE)
                 c = conn.cursor()
                 c.execute("SELECT assignment_title, due_date FROM deadlines ORDER BY id DESC")
@@ -225,7 +224,6 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                         now_dt = datetime.datetime.now()
                         now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # Check late status against active deadline
                         is_late = 0
                         conn = sqlite3.connect(DB_FILE)
                         c = conn.cursor()
@@ -317,7 +315,6 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                         else:
                             st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** by your teacher ({sub_time}){late_badge}")
                             
-                            # 🔄 UNSUBMIT WRONG DOCUMENT OPTION
                             col_unsub1, col_unsub2 = st.columns([3, 1])
                             with col_unsub1:
                                 st.caption("Uploaded the wrong document by mistake?")
@@ -341,7 +338,7 @@ elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
     st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
     st.info("Welcome! Please enter your 4-digit access PIN to view your daughter's performance and analytics.")
     
-    parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4)
+    parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4, key="parent_pin_entry")
     
     if parent_pin_input:
         parent_info = PARENT_PINS.get(parent_pin_input)
@@ -350,7 +347,6 @@ elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
             parent_name, student_name = parent_info
             st.success(f"🔓 Welcome, {parent_name}! Viewing performance report for: **{student_name}**")
             
-            # Check missing/overdue assignments
             missing_hw = get_missing_assignments(student_name)
             if missing_hw:
                 st.error(f"🚨 **UNSUBMITTED / OVERDUE ASSIGNMENTS DETECTED:**")
@@ -368,7 +364,6 @@ elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
             ''', (student_name,))
             p_results = c.fetchall()
             
-            # Check for late submissions
             c.execute('''
                 SELECT assignment_title, submitted_at 
                 FROM submissions 
@@ -378,9 +373,8 @@ elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
             late_notices = c.fetchall()
             conn.close()
             
-            # 🔔 LATE SUBMISSION NOTIFICATIONS
             if late_notices:
-                st.warning(f"⚠️️ **COMPLETED LATE:** {student_name} submitted the following assignments past the deadline:")
+                st.warning(f"⚠️ **COMPLETED LATE:** {student_name} submitted the following assignments past the deadline:")
                 for l_title, l_time in late_notices:
                     st.caption(f"• **{l_title}** (Submitted on {l_time})")
                 st.divider()
@@ -417,7 +411,7 @@ elif portal_tab == "👨‍‍👩‍👧 Parent Analytics Dashboard":
 # -------------------- 3. TEACHER SECURE PORTAL --------------------
 else:
     st.header("🔒 Teacher Secure Dashboard")
-    pin = st.text_input("Enter Teacher Secret Passcode", type="password")
+    pin = st.text_input("Enter Teacher Secret Passcode", type="password", key="teacher_passcode_entry")
     
     if pin == TEACHER_PIN:
         st.success("🔓 Authorized Teacher Access Granted")
@@ -443,7 +437,6 @@ else:
             for s_pin, s_name in STUDENT_PINS.items():
                 st.markdown(f"### 👤 Student: **{s_name}**")
                 
-                # Missing HW
                 m_hw = get_missing_assignments(s_name)
                 if m_hw:
                     st.error(f"❌ **Didn't Do Homework ({len(m_hw)} Missing):**")
@@ -452,7 +445,6 @@ else:
                 else:
                     st.success("✅ No overdue unsubmitted homework!")
                 
-                # Late Submissions
                 conn = sqlite3.connect(DB_FILE)
                 c = conn.cursor()
                 c.execute("SELECT assignment_title, submitted_at FROM submissions WHERE LOWER(student_name) = LOWER(?) AND is_late = 1", (s_name,))
@@ -602,7 +594,6 @@ else:
                 
                 col_act1, col_act2 = st.columns(2)
                 with col_act1:
-                    # ↩️ DISAPPROVE / REVERT TO PENDING ACTION
                     if st.button("↩️ Disapprove & Return to Pending"):
                         conn = sqlite3.connect(DB_FILE)
                         c = conn.cursor()
@@ -625,9 +616,9 @@ else:
                 st.info("No approved reports.")
                 
     elif pin != "":
-        st.error("🔒 Incorrect Passcode!")
+        st.error("🔒 Incorrect Teacher Passcode!")
     else:
-        st.info("🔒 Enter teacher passcode.")
+        st.info("🔒 Enter teacher secret passcode.")
        
  
              
