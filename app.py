@@ -108,7 +108,7 @@ portal_tab = st.selectbox(
     "Select Portal View:",
     [
         "📤 Student Portal (Submit & View Results)", 
-        "👨‍👩‍‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)", 
+        "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)", 
         "🔒 Teacher Secure Portal (لوحة تحكم المعلم)"
     ]
 )
@@ -119,52 +119,62 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
     
     s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Performance"])
     
+    # --- SUBMIT HOMEWORK TAB (100% PIN AUTHENTICATED) ---
     with s_tab1:
         st.subheader("Upload New Assignment")
-        col1, col2 = st.columns(2)
-        with col1:
-            student_name = st.selectbox("Select Your Name", ["Alia", "Lara"])
-        with col2:
-            assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
-            
-        uploaded_file = st.file_uploader(
-            "Upload Homework File (PDF, PNG, JPG)", 
-            type=["pdf", "png", "jpg", "jpeg"]
-        )
         
-        if st.button("🚀 Submit Homework", type="primary"):
-            if not assignment_title or not uploaded_file:
-                st.error("❌ Please fill in all fields and upload a file.")
+        student_pin_sub = st.text_input("Enter Your 4-Digit Student PIN", type="password", max_chars=4, key="st_sub_pin")
+        
+        if student_pin_sub:
+            matched_student = STUDENT_PINS.get(student_pin_sub)
+            
+            if matched_student:
+                st.success(f"🔓 Authenticated as: **{matched_student}**")
+                
+                assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
+                uploaded_file = st.file_uploader(
+                    "Upload Homework File (PDF, PNG, JPG)", 
+                    type=["pdf", "png", "jpg", "jpeg"]
+                )
+                
+                if st.button("🚀 Submit Homework", type="primary"):
+                    if not assignment_title or not uploaded_file:
+                        st.error("❌ Please provide an assignment title and upload a file.")
+                    else:
+                        with st.spinner("Analyzing your homework with Cambridge AI Standards..."):
+                            file_bytes = uploaded_file.read()
+                            file_name = uploaded_file.name
+                            mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+                            
+                            try:
+                                ai_draft = analyze_homework_gemini(
+                                    matched_student, assignment_title, DEFAULT_CAMBRIDGE_INSTRUCTIONS, file_bytes, mime_type, file_name
+                                )
+                                score_val = extract_score_from_text(ai_draft)
+                                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                conn = sqlite3.connect(DB_FILE)
+                                c = conn.cursor()
+                                c.execute('''
+                                    INSERT INTO submissions 
+                                    (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                                ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, ai_draft, "", score_val, None, "", "", now))
+                                conn.commit()
+                                conn.close()
+                                
+                                st.success(f"✅ Homework submitted successfully for {matched_student}! Your teacher will review it soon.")
+                            except Exception as e:
+                                st.error(f"⚠️ Error: {e}")
             else:
-                with st.spinner("Analyzing your homework with Cambridge AI Standards..."):
-                    file_bytes = uploaded_file.read()
-                    file_name = uploaded_file.name
-                    mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-                    
-                    try:
-                        ai_draft = analyze_homework_gemini(
-                            student_name, assignment_title, DEFAULT_CAMBRIDGE_INSTRUCTIONS, file_bytes, mime_type, file_name
-                        )
-                        score_val = extract_score_from_text(ai_draft)
-                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute('''
-                            INSERT INTO submissions 
-                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
-                        ''', (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, "", score_val, None, "", "", now))
-                        conn.commit()
-                        conn.close()
-                        
-                        st.success(f"✅ Submitted successfully, {student_name}! Your teacher will review it soon.")
-                    except Exception as e:
-                        st.error(f"⚠️ Error: {e}")
-                        
+                st.error("🔒 Invalid 4-Digit PIN! Please check your code.")
+        else:
+            st.info("🔑 Please enter your 4-digit PIN to upload your homework.")
+
+    # --- VIEW RESULTS TAB (100% PIN AUTHENTICATED) ---
     with s_tab2:
-        st.subheader("🔒 Student Login")
-        entered_student_pin = st.text_input("Enter Your 4-Digit PIN", type="password", max_chars=4, key="student_pin_input")
+        st.subheader("🔒 View Performance & Teacher Feedback")
+        entered_student_pin = st.text_input("Enter Your 4-Digit PIN", type="password", max_chars=4, key="student_pin_view")
         
         if entered_student_pin:
             matched_student = STUDENT_PINS.get(entered_student_pin)
@@ -183,7 +193,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 conn.close()
                 
                 if results:
-                    st.subheader(f"📊 Assessment Performance & Reports for {matched_student}")
+                    st.subheader(f"📊 Assessment Reports for {matched_student}")
                     for row in results:
                         a_title, report, t_bytes, t_name, t_mime, status, sub_time = row
                         if status == 'APPROVED':
@@ -373,6 +383,7 @@ else:
         st.error("🔒 Incorrect Passcode!")
     else:
         st.info("🔒 Enter teacher passcode.")
+        
        
  
              
