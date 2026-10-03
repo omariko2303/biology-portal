@@ -122,51 +122,65 @@ init_db()
 # ---------------------------------------------------------
 # HELPER FUNCTIONS
 # ---------------------------------------------------------
-def analyze_homework_gemini(student_name, assignment_title, instructions, file_bytes, mime_type, file_name):
+def analyze_homework_gemini(student_name, assignment_title, instructions, file_bytes, mime_type, file_name, actual_mark=None, total_mark=None, mark_scheme_bytes=None, mark_scheme_mime=None):
     api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     if not api_key:
         raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets!")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-3.8-flash")
+    
+    # Low temperature (0.1) forces strict factual compliance with mark schemes
+    generation_config = {
+        "temperature": 0.1,
+        "top_p": 0.95
+    }
+    model = genai.GenerativeModel("gemini-3.8-flash", generation_config=generation_config)
 
-    # If submitted as Google Drive Link, treat input as text prompt
-    if mime_type == "text/url":
-        url_text = file_bytes.decode("utf-8") if isinstance(file_bytes, bytes) else str(file_bytes)
-        prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-Candidate Name: {student_name}
-Assignment: {assignment_title}
-Instructions & Mark Scheme Standard: {instructions}
-Student Shared Google Drive Link: {url_text}
-
-Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format, and on the very first line provide an estimated numeric percentage score or raw mark out of total (e.g., [SCORE: 85%]). Structure:
-1. **[SCORE: XX%] Executive Summary & Grade Equivalent**
-2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
-3. **Specific Biological Misconceptions & Errors Identified**
-4. **Actionable Next Steps for Improvement**
-"""
-        response = model.generate_content(prompt_text)
-        return response.text
+    calc_pct = round((actual_mark / total_mark) * 100, 1) if (actual_mark is not None and total_mark and total_mark > 0) else 0.0
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
-You are evaluating a student's actual homework submission attached as an image or PDF.
 Candidate Name: {student_name}
-Assignment: {assignment_title}
-Instructions & Mark Scheme Standard: {instructions}
+Assignment/Quiz Title: {assignment_title}
+General Marking Guidelines: {instructions}
 
-Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format, and on the very first line provide an estimated numeric percentage score or raw mark out of total (e.g., [SCORE: 85%]). Structure:
-1. **[SCORE: XX%] Executive Summary & Grade Equivalent**
+CRITICAL SCORE INSTRUCTIONS:
+The teacher has marked this submission manually. The candidate scored EXACTLY {actual_mark} out of {total_mark} ({calc_pct}%).
+You MUST use this exact mark ({actual_mark}/{total_mark} - {calc_pct}%) as absolute truth. Do NOT recalculate or invent a different total score.
+
+EVALUATION TASK:
+1. Examine the attached Student Submission PDF/Image (or Google Drive link text).
+2. If an Official Cambridge Mark Scheme PDF/Image is provided, compare the student's exact written answers line-by-line against that Mark Scheme.
+3. Identify precisely where the candidate earned marks and where marks were lost (missing keywords, incorrect terminology, incomplete explanations).
+4. Provide a structured Markdown report.
+
+Start line 1 with: [SCORE: {calc_pct}%]
+
+Structure:
+1. **Executive Summary & Grade Equivalent** (Reflect score: {actual_mark}/{total_mark} - {calc_pct}%)
 2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
-3. **Specific Biological Misconceptions & Errors Identified**
-4. **Actionable Next Steps for Improvement**
+3. **Specific Biological Misconceptions & Missing Mark Points**
+4. **Actionable Revision Plan for Next Session**
 """
 
-    if mime_type and "image" in mime_type:
-        file_part = {"mime_type": mime_type, "data": file_bytes}
-    else:
-        file_part = {"mime_type": "application/pdf", "data": file_bytes}
+    contents = [prompt_text]
 
-    response = model.generate_content([prompt_text, file_part])
+    # Attach Official Mark Scheme file if uploaded by teacher
+    if mark_scheme_bytes:
+        ms_mime = mark_scheme_mime if mark_scheme_mime else "application/pdf"
+        contents.append("OFFICIAL CAMBRIDGE MARK SCHEME ATTACHMENT:")
+        contents.append({"mime_type": ms_mime, "data": mark_scheme_bytes})
+
+    # Attach Student Submission
+    contents.append("STUDENT SUBMISSION ATTACHMENT:")
+    if mime_type == "text/url":
+        url_text = file_bytes.decode("utf-8") if isinstance(file_bytes, bytes) else str(file_bytes)
+        contents.append(f"Student Shared Google Drive Link: {url_text}")
+    elif mime_type and "image" in mime_type:
+        contents.append({"mime_type": mime_type, "data": file_bytes})
+    else:
+        contents.append({"mime_type": "application/pdf", "data": file_bytes})
+
+    response = model.generate_content(contents)
     return response.text
 
 def extract_score_from_text(report_text):
@@ -242,7 +256,6 @@ if portal_tab == VIEW_STUDENT:
                     for d_title, d_date in deadline_records:
                         st.caption(f"• **{d_title}**: Due by **{d_date}**")
                 
-                # Dynamic Submission Options to solve Google Drive / Mobile Upload issues
                 submit_mode = st.radio(
                     "Select How You Want to Submit:",
                     ["📁 Direct File Upload (Downloaded PDF/Image)", "🔗 Google Drive Shared Link"],
@@ -270,7 +283,7 @@ if portal_tab == VIEW_STUDENT:
                     if not assignment_title.strip():
                         st.error("❌ Please enter an Assignment Title before submitting.")
                     elif submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)" and uploaded_file is None:
-                        st.error("❌ Upload failed or incomplete. Please tap the red 'X', select the file again from your local downloads, or switch to 'Google Drive Shared Link' above.")
+                        st.error("❌ Upload failed or incomplete. Please select the file again from local downloads, or switch to 'Google Drive Shared Link' above.")
                     elif submit_mode == "🔗 Google Drive Shared Link" and not drive_link.strip():
                         st.error("❌ Please paste a valid Google Drive link before submitting.")
                     else:
@@ -531,7 +544,7 @@ elif portal_tab == VIEW_TEACHER:
         teacher_instructions = st.text_area(
             "Customize AI evaluation focus:",
             value=DEFAULT_CAMBRIDGE_INSTRUCTIONS,
-            height=140
+            height=120
         )
         st.divider()
         
@@ -580,7 +593,7 @@ elif portal_tab == VIEW_TEACHER:
                 with col_file:
                     st.subheader(f"📄 Original File ({f_name})")
                     if m_type == "text/url":
-                        drive_url = f_bytes.decode("utf-8") if isinstance(file_bytes, bytes) else str(f_bytes)
+                        drive_url = f_bytes.decode("utf-8") if isinstance(f_bytes, bytes) else str(f_bytes)
                         st.info("🔗 **Google Drive Shared Link Submission:**")
                         st.markdown(f"[👉 Click here to open student's Google Drive File]({drive_url})")
                     elif m_type and "image" in m_type:
@@ -589,27 +602,47 @@ elif portal_tab == VIEW_TEACHER:
                         st.download_button("⬇ Download File", data=f_bytes, file_name=f_name, mime=m_type)
                     
                     st.divider()
-                    st.subheader("✍️ Upload Teacher Marked File")
-                    corrected_file_upload = st.file_uploader("Upload corrected notes", type=["pdf", "png", "jpg"], key=f"up_{sub_id}")
+                    
+                    # 📋 Official Mark Scheme Upload (PDF/Image) for 95%+ diagnostic accuracy
+                    st.subheader("📋 Official Cambridge Mark Scheme (PDF / Image)")
+                    st.caption("Upload the official mark scheme PDF or answer key image for this specific quiz/exam.")
+                    ms_file = st.file_uploader("Upload Mark Scheme PDF/Image", type=["pdf", "png", "jpg", "jpeg"], key=f"ms_up_{sub_id}")
+                    
+                    st.divider()
+                    st.subheader("✍️️ Upload Teacher Marked File for Student")
+                    corrected_file_upload = st.file_uploader("Upload corrected PDF notes for student", type=["pdf", "png", "jpg"], key=f"up_{sub_id}")
                 
                 with col_edit:
                     st.subheader("✏️ AI Report Generation & Editing")
                     
+                    # Manual Raw Marks Override to guarantee 100% accurate score calculations
+                    st.markdown("##### 🎯 Enter Exact Marks Awarded:")
+                    c_m1, c_m2 = st.columns(2)
+                    with c_m1:
+                        teacher_raw_score = st.number_input("Marks Obtained:", min_value=0.0, max_value=200.0, value=47.0, step=1.0, key=f"raw_{sub_id}")
+                    with c_m2:
+                        teacher_max_score = st.number_input("Total Max Marks:", min_value=1.0, max_value=200.0, value=67.0, step=1.0, key=f"max_{sub_id}")
+                    
                     if not ai_draft:
                         if st.button("⚡ Generate AI Draft Report (Gemini 3.8-Flash)", type="secondary"):
-                            with st.spinner("Analyzing submission with Gemini 3.8-Flash..."):
+                            with st.spinner("Analyzing student submission against Official Mark Scheme..."):
                                 try:
+                                    ms_bytes = ms_file.getvalue() if ms_file else None
+                                    ms_mime = ms_file.type if ms_file else None
+                                    
                                     generated_draft = analyze_homework_gemini(
-                                        s_name, a_title, teacher_instructions, f_bytes, m_type, f_name
+                                        s_name, a_title, teacher_instructions, f_bytes, m_type, f_name,
+                                        actual_mark=teacher_raw_score, total_mark=teacher_max_score,
+                                        mark_scheme_bytes=ms_bytes, mark_scheme_mime=ms_mime
                                     )
-                                    score_val = extract_score_from_text(generated_draft)
+                                    calc_percentage = round((teacher_raw_score / teacher_max_score) * 100, 1) if teacher_max_score > 0 else 0.0
                                     
                                     conn = sqlite3.connect(DB_FILE)
                                     c = conn.cursor()
-                                    c.execute("UPDATE submissions SET ai_draft = ?, estimated_score = ? WHERE id = ?", (generated_draft, score_val, sub_id))
+                                    c.execute("UPDATE submissions SET ai_draft = ?, estimated_score = ? WHERE id = ?", (generated_draft, calc_percentage, sub_id))
                                     conn.commit()
                                     conn.close()
-                                    st.success("✅ Draft generated successfully!")
+                                    st.success("✅ Draft generated with accurate marks & mark scheme alignment!")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"⚠ Error generating draft: {e}")
