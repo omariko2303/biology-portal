@@ -108,8 +108,8 @@ portal_tab = st.selectbox(
     "Select Portal View:",
     [
         "📤 Student Portal (Submit & View Results)", 
-        "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)", 
-        "🔒 Teacher Secure Portal (لوحة تحكم المعلم)"
+        "👨‍👩‍👧 Parent Analytics Dashboard", 
+        "🔒 Teacher Secure Portal"
     ]
 )
 
@@ -119,7 +119,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
     
     s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Performance"])
     
-    # --- SUBMIT HOMEWORK TAB (100% PIN AUTHENTICATED) ---
+    # --- SUBMIT HOMEWORK TAB ---
     with s_tab1:
         st.subheader("Upload New Assignment")
         
@@ -171,7 +171,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
         else:
             st.info("🔑 Please enter your 4-digit PIN to upload your homework.")
 
-    # --- VIEW RESULTS TAB (100% PIN AUTHENTICATED) ---
+    # --- VIEW RESULTS TAB ---
     with s_tab2:
         st.subheader("🔒 View Performance & Teacher Feedback")
         entered_student_pin = st.text_input("Enter Your 4-Digit PIN", type="password", max_chars=4, key="student_pin_view")
@@ -216,9 +216,9 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                 st.error("🔒 Invalid 4-Digit Student PIN!")
 
 # -------------------- 2. PARENT ANALYTICS PORTAL --------------------
-elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)":
+elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard":
     st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
-    st.info("مرحباً بك أستاذنا ولي الأمر. يرجى إدخال رمز الدخول المكون من 4 أرقام لمتابعة أداء ابنك/ابنتك.")
+    st.info("Welcome! Please enter your 4-digit access PIN to view your daughter's performance and analytics.")
     
     parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4)
     
@@ -227,7 +227,7 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
         
         if parent_info:
             parent_name, student_name = parent_info
-            st.success(f"🔓 أهلاً بكِ أ/ {parent_name} - تقرير متابعة الطالبة: {student_name}")
+            st.success(f"🔓 Welcome, {parent_name}! Viewing performance report for: **{student_name}**")
             
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
@@ -252,12 +252,12 @@ elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ول
                 m2.metric("Total Completed Assignments 📝", len(p_results))
                 
                 st.divider()
-                st.subheader("⚠️ Detailed Reports & Weaknesses")
+                st.subheader("⚠️ Detailed Evaluation Reports & Key Takeaways")
                 for row in p_results:
                     with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%) - {row[3]}"):
                         st.markdown(row[2])
             else:
-                st.info(f"ℹ️ لا توجد تقارير معتمدة حتى الآن للطالبة {student_name}.")
+                st.info(f"ℹ️ No approved performance reports found yet for {student_name}.")
         else:
             st.error("🔒 Invalid 4-Digit Parent PIN!")
 
