@@ -10,6 +10,20 @@ st.set_page_config(
     layout="wide"
 )
 
+# 🙈 HIDE STREAMLIT FOOTER, TOOLBAR & "MANAGE APP" BUTTON
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    div[data-testid="stDecoration"] {visibility: hidden;}
+    div[data-testid="stStatusWidget"] {visibility: hidden;}
+    [data-testid="manage-app-button"] {display: none !important;}
+    .stDeployButton {display:none !important;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 DB_FILE = "homework_portal_v5.db"
 
 # 🔑 Teacher Security Passcode
@@ -108,7 +122,7 @@ portal_tab = st.selectbox(
     "Select Portal View:",
     [
         "📤 Student Portal (Submit & View Results)", 
-        "👨‍👩‍👧 Parent Analytics Dashboard", 
+        "👨‍👩‍‍👧 Parent Analytics Dashboard", 
         "🔒 Teacher Secure Portal"
     ]
 )
@@ -119,7 +133,7 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
     
     s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Performance"])
     
-    # --- SUBMIT HOMEWORK TAB ---
+    # --- SUBMIT HOMEWORK TAB (INSTANT 0-WAIT SUBMISSION) ---
     with s_tab1:
         st.subheader("Upload New Assignment")
         
@@ -141,31 +155,24 @@ if portal_tab == "📤 Student Portal (Submit & View Results)":
                     if not assignment_title or not uploaded_file:
                         st.error("❌ Please provide an assignment title and upload a file.")
                     else:
-                        with st.spinner("Analyzing your homework with Cambridge AI Standards..."):
-                            file_bytes = uploaded_file.read()
-                            file_name = uploaded_file.name
-                            mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-                            
-                            try:
-                                ai_draft = analyze_homework_gemini(
-                                    matched_student, assignment_title, DEFAULT_CAMBRIDGE_INSTRUCTIONS, file_bytes, mime_type, file_name
-                                )
-                                score_val = extract_score_from_text(ai_draft)
-                                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                
-                                conn = sqlite3.connect(DB_FILE)
-                                c = conn.cursor()
-                                c.execute('''
-                                    INSERT INTO submissions 
-                                    (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
-                                ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, ai_draft, "", score_val, None, "", "", now))
-                                conn.commit()
-                                conn.close()
-                                
-                                st.success(f"✅ Homework submitted successfully for {matched_student}! Your teacher will review it soon.")
-                            except Exception as e:
-                                st.error(f"⚠️ Error: {e}")
+                        # Direct database save with zero AI waiting time
+                        file_bytes = uploaded_file.read()
+                        file_name = uploaded_file.name
+                        mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute('''
+                            INSERT INTO submissions 
+                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
+                            VALUES (?, ?, ?, ?, ?, '', '', 0.0, None, '', '', 'PENDING', ?)
+                        ''', (matched_student, assignment_title, file_name, file_bytes, mime_type, now))
+                        conn.commit()
+                        conn.close()
+                        
+                        st.balloons()
+                        st.success(f"⚡ Homework submitted instantly for {matched_student}! Your teacher will review and grade it soon.")
             else:
                 st.error("🔒 Invalid 4-Digit PIN! Please check your code.")
         else:
@@ -291,7 +298,7 @@ else:
         st.divider()
         
         dashboard_mode = st.radio(
-            "Select Dashboard Mode:", 
+            "Select Management Action:", 
             ["⏳ Review Pending Submissions & Generate Follow-up Questions", "✅ Manage Approved Reports"],
             horizontal=True
         )
@@ -325,16 +332,40 @@ else:
                     corrected_file_upload = st.file_uploader("Upload corrected notes", type=["pdf", "png", "jpg"], key=f"up_{sub_id}")
                 
                 with col_edit:
-                    st.subheader("✏️ Edit AI Report & AI Follow-up Questions Generator")
-                    final_report_input = st.text_area("Refine Report:", value=ai_draft, height=400)
+                    st.subheader("✏️ AI Report Generation & Editing")
+                    
+                    # On-demand AI draft generation for teacher
+                    if not ai_draft:
+                        if st.button("⚡ Generate AI Draft Report (Gemini 3.8-Flash)", type="secondary"):
+                            with st.spinner("Analyzing submission with Gemini 3.8-Flash..."):
+                                try:
+                                    generated_draft = analyze_homework_gemini(
+                                        s_name, a_title, teacher_instructions, f_bytes, m_type, f_name
+                                    )
+                                    score_val = extract_score_from_text(generated_draft)
+                                    
+                                    conn = sqlite3.connect(DB_FILE)
+                                    c = conn.cursor()
+                                    c.execute("UPDATE submissions SET ai_draft = ?, estimated_score = ? WHERE id = ?", (generated_draft, score_val, sub_id))
+                                    conn.commit()
+                                    conn.close()
+                                    st.success("✅ Draft generated successfully!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"⚠️ Error generating draft: {e}")
+                    
+                    final_report_input = st.text_area("Refine Report:", value=ai_draft if ai_draft else "Click 'Generate AI Draft Report' above to auto-generate...", height=400)
                     
                     if st.button("💡 Generate AI Follow-up Questions for Next Session"):
-                        with st.spinner("Generating targeted Past Paper questions..."):
-                            fu_model = genai.GenerativeModel("gemini-3.8-flash")
-                            fu_prompt = f"Based on this student's evaluation report, generate 3 challenging Cambridge IGCSE Biology Past Paper style follow-up questions to test the student on their weak spots during the next tutoring session:\n{ai_draft}"
-                            fu_res = fu_model.generate_content(fu_prompt)
-                            st.info("### 💡 Suggested Follow-up Questions for Next Lesson:")
-                            st.markdown(fu_res.text)
+                        if not final_report_input or final_report_input.startswith("Click 'Generate"):
+                            st.warning("Please generate or enter a report draft first.")
+                        else:
+                            with st.spinner("Generating targeted Past Paper questions..."):
+                                fu_model = genai.GenerativeModel("gemini-3.8-flash")
+                                fu_prompt = f"Based on this student's evaluation report, generate 3 challenging Cambridge IGCSE Biology Past Paper style follow-up questions to test the student on their weak spots during the next tutoring session:\n{final_report_input}"
+                                fu_res = fu_model.generate_content(fu_prompt)
+                                st.info("### 💡 Suggested Follow-up Questions for Next Lesson:")
+                                st.markdown(fu_res.text)
                     
                     if st.button("✅ Approve & Publish", type="primary"):
                         corr_bytes = corrected_file_upload.read() if corrected_file_upload else None
