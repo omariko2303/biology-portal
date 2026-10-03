@@ -230,46 +230,51 @@ if portal_tab == VIEW_STUDENT:
                 )
                 
                 if st.button("🚀 Submit Homework", type="primary"):
-                    if not assignment_title or not uploaded_file:
-                        st.error("❌ Please provide an assignment title and upload a file.")
+                    if not assignment_title.strip():
+                        st.error("❌ Please enter an Assignment Title before submitting.")
+                    elif uploaded_file is None:
+                        st.error("❌ Upload incomplete! The file failed to reach the server. Tap the red 'X', select the file again, and wait for the upload bar to complete.")
                     else:
                         file_bytes = uploaded_file.read()
-                        file_name = uploaded_file.name
-                        mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-                        now_dt = datetime.datetime.now()
-                        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        is_late = 0
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute("SELECT due_date FROM deadlines WHERE LOWER(assignment_title) = LOWER(?)", (assignment_title.strip(),))
-                        d_res = c.fetchone()
-                        
-                        if d_res:
-                            try:
-                                due_dt = datetime.datetime.strptime(d_res[0], "%Y-%m-%d %H:%M:%S")
-                                if now_dt > due_dt:
-                                    is_late = 1
-                            except:
-                                pass
-                        
-                        c.execute('''
-                            INSERT INTO submissions 
-                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at, is_late)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (matched_student, assignment_title.strip(), file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now_str, is_late))
-                        conn.commit()
-                        conn.close()
-                        
-                        st.balloons()
-                        selected_quote = random.choice(MOTIVATIONAL_QUOTES)
-                        
-                        if is_late == 1:
-                            st.warning(f"⚠️ Homework submitted for **{matched_student}**, but logged as **LATE** (Past set deadline).")
+                        if len(file_bytes) == 0:
+                            st.error("❌ The uploaded file is empty. Please re-select your document.")
                         else:
-                            st.success(f"⚡ Homework submitted instantly for **{matched_student}**! Your teacher will review and grade it soon.")
+                            file_name = uploaded_file.name
+                            mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+                            now_dt = datetime.datetime.now()
+                            now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                             
-                        st.info(f"💡 **Exam Tip & Motivation:**\n\n{selected_quote}")
+                            is_late = 0
+                            conn = sqlite3.connect(DB_FILE)
+                            c = conn.cursor()
+                            c.execute("SELECT due_date FROM deadlines WHERE LOWER(assignment_title) = LOWER(?)", (assignment_title.strip(),))
+                            d_res = c.fetchone()
+                            
+                            if d_res:
+                                try:
+                                    due_dt = datetime.datetime.strptime(d_res[0], "%Y-%m-%d %H:%M:%S")
+                                    if now_dt > due_dt:
+                                        is_late = 1
+                                except:
+                                    pass
+                            
+                            c.execute('''
+                                INSERT INTO submissions 
+                                (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at, is_late)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (matched_student, assignment_title.strip(), file_name, file_bytes, mime_type, "", "", 0.0, None, "", "", "PENDING", now_str, is_late))
+                            conn.commit()
+                            conn.close()
+                            
+                            st.balloons()
+                            selected_quote = random.choice(MOTIVATIONAL_QUOTES)
+                            
+                            if is_late == 1:
+                                st.warning(f"⚠️ Homework submitted for **{matched_student}**, but logged as **LATE** (Past set deadline).")
+                            else:
+                                st.success(f"⚡ Homework submitted instantly for **{matched_student}**! Your teacher will review and grade it soon.")
+                                
+                            st.info(f"💡 **Exam Tip & Motivation:**\n\n{selected_quote}")
             else:
                 st.error("🔒 Invalid 4-Digit Student PIN!")
         else:
@@ -473,7 +478,7 @@ elif portal_tab == VIEW_TEACHER:
                     st.info("👍 No late submissions recorded.")
                 st.divider()
 
-        st.subheader("⚙️️ Cambridge Mark Scheme Instructions Control")
+        st.subheader("⚙️ Cambridge Mark Scheme Instructions Control")
         teacher_instructions = st.text_area(
             "Customize AI evaluation focus:",
             value=DEFAULT_CAMBRIDGE_INSTRUCTIONS,
@@ -554,7 +559,7 @@ elif portal_tab == VIEW_TEACHER:
                                     st.success("✅ Draft generated successfully!")
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"⚠️ Error generating draft: {e}")
+                                    st.error(f"⚠️️ Error generating draft: {e}")
                     
                     final_report_input = st.text_area(
                         "Refine Report:", 
