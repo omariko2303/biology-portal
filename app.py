@@ -6,12 +6,12 @@ import google.generativeai as genai
 
 # ==================== PAGE CONFIG & SETUP ====================
 st.set_page_config(
-    page_title="IGCSE Biology Assessment Portal",
+    page_title="IGCSE Biology Assessment & Analytics Portal",
     page_icon="🧬",
     layout="wide"
 )
 
-DB_FILE = "homework_portal_v4.db"
+DB_FILE = "homework_portal_v5.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -26,6 +26,7 @@ def init_db():
             mime_type TEXT,
             ai_draft TEXT,
             final_report TEXT,
+            estimated_score REAL,
             teacher_corrected_bytes BLOB,
             teacher_corrected_name TEXT,
             teacher_corrected_mime TEXT,
@@ -63,11 +64,11 @@ Candidate Name: {student_name}
 Assignment: {assignment_title}
 Instructions & Mark Scheme Standard: {instructions}
 
-Carefully inspect the handwritten answers or diagrams in the attached document. Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format:
-1. **Executive Summary & Estimated Raw Score / Grade Equivalent** (Provide a realistic estimated score out of total marks).
-2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment** (Analyze exact correct keywords used vs. missing ones).
-3. **Specific Misconceptions & Errors** (Correct biological inaccuracies).
-4. **Actionable Next Steps for Improvement** (Precise guidance for an A*).
+Provide a comprehensive, rigorous Cambridge-style diagnostic evaluation report in Markdown format, and on the very first line provide an estimated numeric percentage score or raw mark out of total (e.g., [SCORE: 85%]). Structure:
+1. **[SCORE: XX%] Executive Summary & Grade Equivalent**
+2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
+3. **Specific Biological Misconceptions & Errors Identified** (List key missing keywords or errors clearly for an error bank)
+4. **Actionable Next Steps for Improvement**
 """
 
     if mime_type and "image" in mime_type:
@@ -78,129 +79,180 @@ Carefully inspect the handwritten answers or diagrams in the attached document. 
     response = model.generate_content([prompt_text, file_part])
     return response.text
 
+def extract_score_from_text(report_text):
+    import re
+    match = re.search(r'\[SCORE:\s*([\d\.]+)%?\]', report_text)
+    if match:
+        try:
+            return float(match.group(1))
+        except:
+            return 75.0
+    return 75.0  افتراضي في حال عدم المطابقة
+
 # ==================== MAIN UI ====================
-st.title("🧬 IGCSE Biology Assessment Portal")
+st.title("🧬 IGCSE Biology Assessment & Analytics Portal")
 
-tab1, tab2, tab3 = st.tabs([
-    "📤 Student Portal (Submit Homework)", 
-    "📊 Student Results & Status Lookup", 
-    "🔒 Teacher Secure Portal"
-])
+# توزيع البوابات الرئيسية (طالب، ولي أمر، معلم)
+portal_tab = st.selectbox(
+    "Select Portal View:",
+    [
+        "📤 Student Portal (Submit & View Results)", 
+        "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)", 
+        "🔒 Teacher Secure Portal (لوحة تحكم المعلم)"
+    ]
+)
 
-# -------------------- TAB 1: STUDENT SUBMIT --------------------
-with tab1:
-    st.header("Upload Homework (PDF, JPG, or PNG)")
+# -------------------- 1. STUDENT PORTAL --------------------
+if portal_tab == "📤 Student Portal (Submit & View Results)":
+    st.header("Student Portal")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        student_name = st.text_input("Student Name", placeholder="e.g., Lara")
-    with col2:
-        assignment_title = st.text_input("Assignment Title", placeholder="e.g., hw")
+    s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Feedback"])
+    
+    with s_tab1:
+        st.subheader("Upload New Assignment")
+        col1, col2 = st.columns(2)
+        with col1:
+            student_name = st.text_input("Student Full Name", placeholder="e.g., Lara")
+        with col2:
+            assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
+            
+        uploaded_file = st.file_uploader(
+            "Upload Homework File (PDF, PNG, JPG)", 
+            type=["pdf", "png", "jpg", "jpeg"]
+        )
         
-    uploaded_file = st.file_uploader(
-        "Upload Homework File (Accepted formats: PDF, PNG, JPG, JPEG)", 
-        type=["pdf", "png", "jpg", "jpeg"]
-    )
-    
-    if st.button("🚀 Submit Homework to Teacher & AI", type="primary"):
-        if not student_name or not assignment_title:
-            st.error("❌ Please enter student name and assignment title.")
-        elif not uploaded_file:
-            st.error("❌ Please upload a homework file.")
-        else:
-            with st.spinner("Analyzing student work with Gemini AI vision and submitting..."):
-                file_bytes = uploaded_file.read()
-                file_name = uploaded_file.name
-                mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+        if st.button("🚀 Submit Homework", type="primary"):
+            if not student_name or not assignment_title or not uploaded_file:
+                st.error("❌ Please fill in all fields and upload a file.")
+            else:
+                with st.spinner("Analyzing your homework with Cambridge AI Standards..."):
+                    file_bytes = uploaded_file.read()
+                    file_name = uploaded_file.name
+                    mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+                    
+                    try:
+                        ai_draft = analyze_homework_gemini(
+                            student_name, assignment_title, DEFAULT_CAMBRIDGE_INSTRUCTIONS, file_bytes, mime_type, file_name
+                        )
+                        score_val = extract_score_from_text(ai_draft)
+                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute('''
+                            INSERT INTO submissions 
+                            (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, estimated_score, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                        ''', (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, "", score_val, None, "", "", now))
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"✅ Submitted successfully, {student_name}! Your teacher will review it soon.")
+                    except Exception as e:
+                        st.error(f"⚠️ Error: {e}")
+                        
+    with s_tab2:
+        st.subheader("Check Your Approved Grades & Teacher Corrections")
+        search_name = st.text_input("Enter Your Name for Lookup", key="student_lookup")
+        
+        if st.button("🔍 Search Submissions"):
+            if search_name.strip():
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute('''
+                    SELECT assignment_title, final_report, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at 
+                    FROM submissions 
+                    WHERE LOWER(student_name) = LOWER(?)
+                    ORDER BY id DESC
+                ''', (search_name.strip(),))
+                results = c.fetchall()
+                conn.close()
                 
-                try:
-                    ai_draft = analyze_homework_gemini(
-                        student_name, assignment_title, DEFAULT_CAMBRIDGE_INSTRUCTIONS, file_bytes, mime_type, file_name
-                    )
-                    
-                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    conn = sqlite3.connect(DB_FILE)
-                    c = conn.cursor()
-                    c.execute('''
-                        INSERT INTO submissions 
-                        (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, final_report, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
-                    ''', (student_name, assignment_title, file_name, file_bytes, mime_type, ai_draft, "", None, "", "", now))
-                    conn.commit()
-                    conn.close()
-                    
-                    st.success(f"✅ Submission successful, {student_name}! Your homework has been sent to your teacher for review.")
-                except Exception as e:
-                    st.error(f"⚠️ Error during AI processing: {e}")
+                if results:
+                    for row in results:
+                        a_title, report, t_bytes, t_name, t_mime, status, sub_time = row
+                        if status == 'APPROVED':
+                            st.success(f"📚 **{a_title}** — **APPROVED** ({sub_time})")
+                            st.markdown(report)
+                            if t_bytes:
+                                st.download_button(
+                                    label=f"📥 Download Teacher's Marked File ({t_name})",
+                                    data=t_bytes,
+                                    file_name=t_name,
+                                    mime=t_mime if t_mime else "application/pdf",
+                                    key=f"st_dl_{a_title}_{sub_time}"
+                                )
+                        else:
+                            st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** by your teacher.")
+                        st.divider()
+                else:
+                    st.info("ℹ️ No records found.")
 
-# -------------------- TAB 2: STUDENT LOOKUP --------------------
-with tab2:
-    st.header("Check Submission Status & Approved Reports")
-    search_name = st.text_input("Enter Your Student Name to Lookup Results")
+# -------------------- 2. PARENT ANALYTICS PORTAL --------------------
+elif portal_tab == "👨‍👩‍👧 Parent Analytics Dashboard (رؤية ولي الأمر)":
+    st.header("👨‍👩‍👧 Parent Analytics & Performance Portal")
+    st.info("مرحباً بك أستاذنا ولي الأمر. تتيح لك هذه البوابة متابعة تقدم مستوى ابنك/ابنتك، درجات الواجبات، وتحليلات الأداء بدقة.")
     
-    if st.button("🔍 Check My Submissions"):
-        if search_name.strip():
+    parent_passcode = st.text_input("Enter Parent Access PIN", type="password")
+    PARENT_PIN = "Omar_Parent_2026"  # رمز خاص بولي الأمر
+    
+    if parent_passcode == PARENT_PIN:
+        st.success("🔓 Parent Access Authorized")
+        p_student_name = st.text_input("Enter Student Full Name to View Analytics:")
+        
+        if p_student_name.strip():
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute('''
-                SELECT assignment_title, file_name, final_report, teacher_corrected_bytes, teacher_corrected_name, teacher_corrected_mime, status, submitted_at 
+                SELECT assignment_title, estimated_score, final_report, submitted_at 
                 FROM submissions 
-                WHERE LOWER(student_name) = LOWER(?)
-                ORDER BY id DESC
-            ''', (search_name.strip(),))
-            results = c.fetchall()
+                WHERE LOWER(student_name) = LOWER(?) AND status = 'APPROVED'
+                ORDER BY id ASC
+            ''', (p_student_name.strip(),))
+            p_results = c.fetchall()
             conn.close()
             
-            if results:
-                for row in results:
-                    a_title, f_name, report, t_bytes, t_name, t_mime, status, sub_time = row
-                    
-                    if status == 'APPROVED':
-                        st.success(f"📚 **{a_title}** — Status: **APPROVED** (Submitted: {sub_time})")
-                        
-                        # عرض تقرير المعلم/الذكاء الاصطناعي النهائي
-                        st.markdown("### 📝 Evaluation Report")
-                        st.markdown(report)
-                        
-                        # إذا قام المعلم برفع ملف مصحح، يظهر للطالب لتحميله أو مشاهدته
-                        if t_bytes:
-                            st.info(f"✍️ Your teacher has uploaded a corrected/marked copy of your assignment: **{t_name}**")
-                            st.download_button(
-                                label=f"📥 Download Teacher's Marked File ({t_name})",
-                                data=t_bytes,
-                                file_name=t_name,
-                                mime=t_mime if t_mime else "application/pdf",
-                                key=f"download_{a_title}_{sub_time}"
-                            )
-                        
-                        st.download_button(
-                            label="📥 Download Full Report as Text",
-                            data=report,
-                            file_name=f"{a_title}_Report.txt",
-                            mime="text/plain",
-                            key=f"txt_{a_title}_{sub_time}"
-                        )
-                    else:
-                        st.warning(f"⏳ **{a_title}** — Status: **PENDING REVIEW** (Submitted: {sub_time}). Your teacher is currently reviewing your assignment and checking your work.")
-                    st.divider()
+            if p_results:
+                st.subheader(f"📈 Performance Tracking for: {p_student_name}")
+                
+                # استخراج وتجهيز بيانات الرسم البياني وتتبع التقدم
+                chart_data = {row[0]: row[1] for row in p_results}
+                st.line_chart(chart_data)
+                
+                m1, m2 = st.columns(2)
+                scores = [row[1] for row in p_results]
+                avg_score = sum(scores) / len(scores) if scores else 0
+                m1.metric("Average Assessment Score 📊", f"{avg_score:.1f}%")
+                m2.metric("Total Completed Assignments 📝", len(p_results))
+                
+                st.divider()
+                st.subheader("⚠️ Personalized Error Bank & Weaknesses to Focus On")
+                st.markdown("يوضح هذا القسم أبرز المفاهيم التي تم رصدها وتحتاج تركيزاً إضافياً من الطالب بناءً على تقارير كامبريدج:")
+                
+                for row in p_results:
+                    with st.expander(f"📌 Assignment: {row[0]} (Score: {row[1]}%) - {row[3]}"):
+                        st.markdown(row[2])
             else:
-                st.info("ℹ️ No submissions found for this name.")
+                st.info("ℹ️ لا توجد تقارير معتمدة حتى الآن لهذا الطالب.")
+    elif parent_passcode != "":
+        st.error("🔒 Incorrect Parent PIN!")
+    else:
+        st.info("🔒 Please enter the parent PIN provided by your tutor Omar.")
 
-# -------------------- TAB 3: TEACHER SECURE PORTAL --------------------
-with tab3:
-    st.header("Teacher Secure Dashboard")
-    
+# -------------------- 3. TEACHER SECURE PORTAL --------------------
+else:
+    st.header("🔒 Teacher Secure Dashboard")
     pin = st.text_input("Enter Teacher Secret Passcode", type="password")
     TEACHER_PIN = "Omar_Biology_2026_Secure"
     
     if pin == TEACHER_PIN:
         st.success("🔓 Authorized Teacher Access Granted")
         
-        st.subheader("⚙️ Cambridge Mark Scheme Instructions (Teacher Control)")
+        st.subheader("⚙️ Cambridge Mark Scheme Instructions Control")
         teacher_instructions = st.text_area(
-            "Customize AI evaluation focus and guidelines for incoming assignments:",
+            "Customize AI evaluation focus:",
             value=DEFAULT_CAMBRIDGE_INSTRUCTIONS,
-            height=160
+            height=140
         )
         st.divider()
         
@@ -218,14 +270,13 @@ with tab3:
         st.divider()
         
         dashboard_mode = st.radio(
-            "Select Dashboard Management Mode:", 
-            ["⏳ Review Pending Submissions", "✅ Manage Approved Reports"],
+            "Select Dashboard Mode:", 
+            ["⏳ Review Pending Submissions & Generate Follow-up Questions", "✅ Manage Approved Reports"],
             horizontal=True
         )
-        
         st.divider()
         
-        if dashboard_mode == "⏳ Review Pending Submissions":
+        if dashboard_mode == "⏳ Review Pending Submissions & Generate Follow-up Questions":
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute("SELECT id, student_name, assignment_title, file_name, mime_type, file_bytes, ai_draft, submitted_at FROM submissions WHERE status = 'PENDING'")
@@ -234,7 +285,7 @@ with tab3:
             
             if pending_list:
                 options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[7]})": row for row in pending_list}
-                selected_option = st.selectbox("Select Pending Submission to Review:", list(options.keys()))
+                selected_option = st.selectbox("Select Submission:", list(options.keys()))
                 
                 selected_row = options[selected_option]
                 sub_id, s_name, a_title, f_name, m_type, f_bytes, ai_draft, sub_time = selected_row
@@ -242,96 +293,76 @@ with tab3:
                 col_file, col_edit = st.columns([1, 1])
                 
                 with col_file:
-                    st.subheader(f"📄 Student Original File ({f_name})")
+                    st.subheader(f"📄 Original File ({f_name})")
                     if m_type and "image" in m_type:
                         st.image(f_bytes, caption=f"Submitted by {s_name}", use_column_width=True)
                     else:
-                        st.download_button(
-                            label=f"⬇ Download Original Student File",
-                            data=f_bytes,
-                            file_name=f_name,
-                            mime=m_type if m_type else "application/pdf"
-                        )
+                        st.download_button("⬇ Download File", data=f_bytes, file_name=f_name, mime=m_type)
                     
                     st.divider()
-                    st.subheader("✍️ Upload Teacher's Marked File (Optional)")
-                    corrected_file_upload = st.file_uploader(
-                        "Upload PDF/Image with your manual notes & corrections", 
-                        type=["pdf", "png", "jpg", "jpeg"],
-                        key=f"uploader_{sub_id}"
-                    )
+                    st.subheader("✍️ Upload Teacher Marked File")
+                    corrected_file_upload = st.file_uploader("Upload corrected notes", type=["pdf", "png", "jpg"], key=f"up_{sub_id}")
                 
                 with col_edit:
-                    st.subheader("✏️ Edit AI Draft & Finalize Report")
-                    final_report_input = st.text_area("Review and refine the diagnostic report before release:", value=ai_draft, height=450)
+                    st.subheader("✏️ Edit AI Report & AI Follow-up Questions Generator")
+                    final_report_input = st.text_area("Refine Report:", value=ai_draft, height=400)
                     
-                    col_btn1, col_btn2 = st.columns(2)
-                    with col_btn1:
-                        if st.button("✅ Approve & Publish Report to Student", type="primary"):
-                            corr_bytes = corrected_file_upload.read() if corrected_file_upload else None
-                            corr_name = corrected_file_upload.name if corrected_file_upload else ""
-                            corr_mime = corrected_file_upload.type if corrected_file_upload else ""
-                            
-                            conn = sqlite3.connect(DB_FILE)
-                            c = conn.cursor()
-                            c.execute('''
-                                UPDATE submissions 
-                                SET final_report = ?, teacher_corrected_bytes = ?, teacher_corrected_name = ?, teacher_corrected_mime = ?, status = 'APPROVED' 
-                                WHERE id = ?
-                            ''', (final_report_input, corr_bytes, corr_name, corr_mime, sub_id))
-                            conn.commit()
-                            conn.close()
-                            st.balloons()
-                            st.success("🎉 Report and marked file approved and published to the student portal!")
-                            st.rerun()
+                    # ميزة توليد أسئلة متابعة مقترحة للحصة القادمة
+                    if st.button("💡 Generate AI Follow-up Questions for Next Session"):
+                        with st.spinner("Generating targeted Past Paper questions..."):
+                            fu_model = genai.GenerativeModel("gemini-3.8-flash")
+                            fu_prompt = f"Based on this student's evaluation report, generate 3 challenging Cambridge IGCSE Biology Past Paper style follow-up questions to test the student on their weak spots during the next tutoring session:\n{ai_draft}"
+                            fu_res = fu_model.generate_content(fu_prompt)
+                            st.info("### 💡 Suggested Follow-up Questions for Next Lesson:")
+                            st.markdown(fu_res.text)
                     
-                    with col_btn2:
-                        if st.button("🗑️️ Delete Submission", type="secondary"):
-                            conn = sqlite3.connect(DB_FILE)
-                            c = conn.cursor()
-                            c.execute("DELETE FROM submissions WHERE id = ?", (sub_id,))
-                            conn.commit()
-                            conn.close()
-                            st.warning("⚠️ Submission deleted successfully!")
-                            st.rerun()
+                    if st.button("✅ Approve & Publish", type="primary"):
+                        corr_bytes = corrected_file_upload.read() if corrected_file_upload else None
+                        corr_name = corrected_file_upload.name if corrected_file_upload else ""
+                        corr_mime = corrected_file_upload.type if corrected_file_upload else ""
+                        score_val = extract_score_from_text(final_report_input)
+                        
+                        conn = sqlite3.connect(DB_FILE)
+                        c = conn.cursor()
+                        c.execute('''
+                            UPDATE submissions 
+                            SET final_report = ?, estimated_score = ?, teacher_corrected_bytes = ?, teacher_corrected_name = ?, teacher_corrected_mime = ?, status = 'APPROVED' 
+                            WHERE id = ?
+                        ''', (final_report_input, score_val, corr_bytes, corr_name, corr_mime, sub_id))
+                        conn.commit()
+                        conn.close()
+                        st.balloons()
+                        st.success("🎉 Published successfully!")
+                        st.rerun()
             else:
-                st.info("🎉 All caught up! No pending submissions.")
-                
+                st.info("🎉 No pending submissions.")
         else:
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
-            c.execute("SELECT id, student_name, assignment_title, file_name, final_report, teacher_corrected_name, submitted_at FROM submissions WHERE status = 'APPROVED'")
+            c.execute("SELECT id, student_name, assignment_title, final_report, submitted_at FROM submissions WHERE status = 'APPROVED'")
             approved_list = c.fetchall()
             conn.close()
             
             if approved_list:
-                approved_options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]} ({row[6]})": row for row in approved_list}
-                selected_app_option = st.selectbox("Select Approved Report to Manage:", list(approved_options.keys()))
-                
+                approved_options = {f"ID #{row[0]} | Student: {row[1]} - {row[2]}": row for row in approved_list}
+                selected_app_option = st.selectbox("Select Approved:", list(approved_options.keys()))
                 app_row = approved_options[selected_app_option]
-                app_id, app_s_name, app_a_title, app_f_name, app_report, app_corr_name, app_time = app_row
-                
-                st.subheader(f"📖 Approved Report for {app_s_name} ({app_a_title})")
-                st.markdown(app_report)
-                if app_corr_name:
-                    st.info(f"✍️ Attached Teacher Marked File: {app_corr_name}")
-                
-                st.divider()
-                if st.button("🗑️ Delete This Approved Report Permanently", type="primary"):
+                st.markdown(app_row[3])
+                if st.button("🗑 Delete Permanently"):
                     conn = sqlite3.connect(DB_FILE)
                     c = conn.cursor()
-                    c.execute("DELETE FROM submissions WHERE id = ?", (app_id,))
+                    c.execute("DELETE FROM submissions WHERE id = ?", (app_row[0],))
                     conn.commit()
                     conn.close()
-                    st.warning("⚠️ Approved report deleted successfully!")
+                    st.warning("Deleted!")
                     st.rerun()
             else:
-                st.info("ℹ️ No approved reports found.")
+                st.info("No approved reports.")
                 
     elif pin != "":
-        st.error("🔒 Incorrect Passcode! Access Denied.")
+        st.error("🔒 Incorrect Passcode!")
     else:
-        st.info("🔒 Please enter the secure teacher passcode to access evaluation controls.")
+        st.info("🔒 Enter teacher passcode.")
        
  
              
