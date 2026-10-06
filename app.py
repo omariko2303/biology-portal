@@ -31,9 +31,11 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # ---------------------------------------------------------
 # SUPABASE INITIALIZATION
 # ---------------------------------------------------------
-SUPABASE_URL = st.secrets.get("https://lovznvdaxmcogusuikas.supabase.co
-", "")
-SUPABASE_KEY = st.secrets.get("sb_publishable_NhXOc29YEVWBCwnqAuLtcg_T3qq3JMx", "")
+# ---------------------------------------------------------
+# SUPABASE INITIALIZATION
+# ---------------------------------------------------------
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("❌ Supabase URL or Key is missing in Streamlit Secrets! Please add them.")
