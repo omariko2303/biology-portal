@@ -1,4 +1,5 @@
 streamlit
-google-generativeai
-pypdf
 supabase
+google-genai
+groq
+pypdf
