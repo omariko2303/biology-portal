@@ -2,6 +2,8 @@ import streamlit as st
 import datetime
 import random
 import base64
+import uuid
+import requests
 import google.generativeai as genai
 from supabase import create_client
 
@@ -28,9 +30,6 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# SUPABASE INITIALIZATION
-# ---------------------------------------------------------
 # ---------------------------------------------------------
 # SUPABASE INITIALIZATION
 # ---------------------------------------------------------
@@ -76,7 +75,7 @@ DEFAULT_CAMBRIDGE_INSTRUCTIONS = (
 )
 
 VIEW_STUDENT = "📤 Student Portal (Submit & View Results)"
-VIEW_PARENT = "👨‍‍👩‍👧 Parent Analytics Dashboard"
+VIEW_PARENT = "👨‍👩‍👧 Parent Analytics Dashboard"
 VIEW_TEACHER = "🔒 Teacher Secure Portal"
 
 # ---------------------------------------------------------
@@ -93,7 +92,7 @@ def analyze_homework_gemini(student_name, assignment_title, instructions, file_b
         "temperature": 0.1,
         "top_p": 0.95
     }
-    model = genai.GenerativeModel("gemini-3.8-flash", generation_config=generation_config)
+    model = genai.GenerativeModel("gemini-1.5-flash", generation_config=generation_config)
 
     calc_pct = round((actual_mark / total_mark) * 100, 1) if (actual_mark is not None and total_mark and total_mark > 0) else 0.0
 
@@ -232,21 +231,38 @@ if portal_tab == VIEW_STUDENT:
                     elif submit_mode == "🔗 Google Drive Shared Link" and not drive_link.strip():
                         st.error("❌ Please paste a valid Google Drive link before submitting.")
                     else:
-                        file_bytes = None
+                        file_url = ""
                         file_name = ""
                         mime_type = ""
                         
+                        # UPLOAD TO SUPABASE STORAGE (Fixes the timeout error)
                         if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
                             raw_bytes = uploaded_file.getvalue()
                             if not raw_bytes or len(raw_bytes) == 0:
                                 st.error("❌ Uploaded file is empty. Please re-select the file.")
                                 st.stop()
-                            # Encode to base64 for Supabase storage safety
-                            file_bytes = base64.b64encode(raw_bytes).decode("utf-8")
+                            
                             file_name = uploaded_file.name
                             mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
+                            
+                            # Create a unique filename
+                            file_ext = file_name.split('.')[-1] if '.' in file_name else 'pdf'
+                            storage_path = f"{matched_student}/{uuid.uuid4()}.{file_ext}"
+                            
+                            try:
+                                # Upload to Storage
+                                supabase.storage.from_("homework-submissions").upload(
+                                    path=storage_path,
+                                    file=raw_bytes,
+                                    file_options={"content-type": mime_type}
+                                )
+                                # Get the public URL
+                                file_url = supabase.storage.from_("homework-submissions").get_public_url(storage_path)
+                            except Exception as e:
+                                st.error(f"❌ Storage upload failed: {e}")
+                                st.stop()
                         else:
-                            file_bytes = base64.b64encode(drive_link.strip().encode("utf-8")).decode("utf-8")
+                            file_url = drive_link.strip()
                             file_name = "Google_Drive_Link.txt"
                             mime_type = "text/url"
                             
@@ -267,12 +283,12 @@ if portal_tab == VIEW_STUDENT:
                             "student_name": matched_student,
                             "assignment_title": assignment_title.strip(),
                             "file_name": file_name,
-                            "file_bytes": file_bytes,
+                            "file_url": file_url, # STORING URL, NOT BYTES
                             "mime_type": mime_type,
                             "ai_draft": "",
                             "final_report": "",
                             "estimated_score": 0.0,
-                            "teacher_corrected_bytes": None,
+                            "teacher_corrected_url": None,
                             "teacher_corrected_name": "",
                             "teacher_corrected_mime": "",
                             "status": "PENDING",
@@ -319,9 +335,9 @@ if portal_tab == VIEW_STUDENT:
                         a_title = row["assignment_title"]
                         score = row["estimated_score"]
                         report = row["final_report"]
-                        t_bytes_b64 = row["teacher_corrected_bytes"]
-                        t_name = row["teacher_corrected_name"]
-                        t_mime = row["teacher_corrected_mime"]
+                        t_url = row.get("teacher_corrected_url", "")
+                        t_name = row.get("teacher_corrected_name", "")
+                        t_mime = row.get("teacher_corrected_mime", "")
                         status = row["status"]
                         sub_time = row["submitted_at"]
                         is_late = row["is_late"]
@@ -342,18 +358,8 @@ if portal_tab == VIEW_STUDENT:
                                     st.warning(f"📈 Score dropped by **{abs(diff):.1f}%**. Review feedback below!")
                             
                             st.markdown(report)
-                            if t_bytes_b64:
-                                try:
-                                    t_bytes = base64.b64decode(t_bytes_b64)
-                                    st.download_button(
-                                        label=f"📥 Download Marked File ({t_name})",
-                                        data=t_bytes,
-                                        file_name=t_name,
-                                        mime=t_mime if t_mime else "application/pdf",
-                                        key=f"st_dl_{sub_id}_{i}"
-                                    )
-                                except:
-                                    pass
+                            if t_url:
+                                st.markdown(f"📥 **[Download Marked File ({t_name})]({t_url})**")
                         else:
                             st.warning(f"⏳ **{a_title}** — **PENDING REVIEW** ({sub_time}){late_badge}")
                             col_u1, col_u2 = st.columns([3, 1])
@@ -377,7 +383,7 @@ if portal_tab == VIEW_STUDENT:
 # 2. PARENT ANALYTICS PORTAL VIEW
 # ---------------------------------------------------------
 elif portal_tab == VIEW_PARENT:
-    st.header("👨‍‍👩‍👧 Parent Analytics Dashboard")
+    st.header("👨‍👩‍👧 Parent Analytics Dashboard")
     
     parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4, key="parent_pin_entry")
     
@@ -537,15 +543,10 @@ elif portal_tab == VIEW_TEACHER:
                 a_title = selected_row["assignment_title"]
                 f_name = selected_row["file_name"]
                 m_type = selected_row["mime_type"]
-                f_bytes_b64 = selected_row["file_bytes"]
+                f_url = selected_row.get("file_url", "")
                 ai_draft = selected_row["ai_draft"]
                 sub_time = selected_row["submitted_at"]
                 is_late = selected_row["is_late"]
-                
-                try:
-                    f_bytes = base64.b64decode(f_bytes_b64)
-                except:
-                    f_bytes = f_bytes_b64.encode("utf-8") if isinstance(f_bytes_b64, str) else b""
                 
                 if is_late == 1:
                     st.error(f"🚨 **LATE SUBMISSION NOTIFICATION:** {s_name} submitted this assignment after deadline on {sub_time}.")
@@ -555,13 +556,12 @@ elif portal_tab == VIEW_TEACHER:
                 with col_file:
                     st.subheader(f"📄 Original File ({f_name})")
                     if m_type == "text/url":
-                        drive_url = f_bytes.decode("utf-8") if isinstance(f_bytes, bytes) else str(f_bytes)
                         st.info("🔗 **Google Drive Shared Link Submission:**")
-                        st.markdown(f"[👉 Click here to open student's Google Drive File]({drive_url})")
+                        st.markdown(f"[👉 Click here to open student's Google Drive File]({f_url})")
                     elif m_type and "image" in m_type:
-                        st.image(f_bytes, caption=f"Submitted by {s_name}", use_column_width=True)
+                        st.image(f_url, caption=f"Submitted by {s_name}", use_column_width=True)
                     else:
-                        st.download_button("⬇ Download File", data=f_bytes, file_name=f_name, mime=m_type)
+                        st.markdown(f"[📄 Click here to view/download the Student's PDF]({f_url})")
                     
                     st.divider()
                     st.subheader("📋 Official Cambridge Mark Scheme (PDF / Image)")
@@ -582,14 +582,21 @@ elif portal_tab == VIEW_TEACHER:
                         teacher_max_score = st.number_input("Total Max Marks:", min_value=1.0, max_value=200.0, value=67.0, step=1.0, key=f"max_{sub_id}")
                     
                     if not ai_draft:
-                        if st.button("⚡ Generate AI Draft Report (Gemini 3.8-Flash)", type="secondary"):
+                        if st.button("⚡ Generate AI Draft Report", type="secondary"):
                             with st.spinner("Analyzing student submission against Official Mark Scheme..."):
                                 try:
                                     ms_bytes = ms_file.getvalue() if ms_file else None
                                     ms_mime = ms_file.type if ms_file else None
                                     
+                                    # Fetch the file bytes for Gemini from the URL
+                                    if m_type == "text/url":
+                                        gemini_file_bytes = f_url.encode("utf-8")
+                                    else:
+                                        response = requests.get(f_url)
+                                        gemini_file_bytes = response.content
+                                    
                                     generated_draft = analyze_homework_gemini(
-                                        s_name, a_title, teacher_instructions, f_bytes, m_type, f_name,
+                                        s_name, a_title, teacher_instructions, gemini_file_bytes, m_type, f_name,
                                         actual_mark=teacher_raw_score, total_mark=teacher_max_score,
                                         mark_scheme_bytes=ms_bytes, mark_scheme_mime=ms_mime
                                     )
@@ -610,19 +617,34 @@ elif portal_tab == VIEW_TEACHER:
                     edited_report = st.text_area("Edit Final Report (Markdown):", value=ai_draft, height=350, key=f"edit_rep_{sub_id}")
                     
                     if st.button("✅ Approve & Publish Report to Student", type="primary"):
-                        t_corr_bytes_b64 = None
+                        t_corr_url = None
                         t_corr_name = ""
                         t_corr_mime = ""
+                        
                         if corrected_file_upload:
-                            t_corr_bytes_b64 = base64.b64encode(corrected_file_upload.getvalue()).decode("utf-8")
+                            corr_bytes = corrected_file_upload.getvalue()
                             t_corr_name = corrected_file_upload.name
                             t_corr_mime = corrected_file_upload.type if corrected_file_upload.type else "application/pdf"
+                            
+                            corr_ext = t_corr_name.split('.')[-1] if '.' in t_corr_name else 'pdf'
+                            corr_path = f"{s_name}/corrected_{uuid.uuid4()}.{corr_ext}"
+                            
+                            try:
+                                supabase.storage.from_("homework-submissions").upload(
+                                    path=corr_path,
+                                    file=corr_bytes,
+                                    file_options={"content-type": t_corr_mime}
+                                )
+                                t_corr_url = supabase.storage.from_("homework-submissions").get_public_url(corr_path)
+                            except Exception as e:
+                                st.error(f"Error uploading corrected file: {e}")
+                                st.stop()
                         
                         try:
                             supabase.table("submissions").update({
                                 "final_report": edited_report,
                                 "status": "APPROVED",
-                                "teacher_corrected_bytes": t_corr_bytes_b64,
+                                "teacher_corrected_url": t_corr_url,
                                 "teacher_corrected_name": t_corr_name,
                                 "teacher_corrected_mime": t_corr_mime
                             }).eq("id", sub_id).execute()
