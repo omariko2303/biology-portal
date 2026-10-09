@@ -4,11 +4,11 @@ import random
 import uuid
 import requests
 import io
+import base64
 from supabase import create_client
 from google import genai
 from google.genai import types
-from groq import Groq
-from pypdf import PdfReader
+from openai import OpenAI
 
 # ---------------------------------------------------------
 # PAGE CONFIGURATION & CUSTOM STYLES
@@ -33,12 +33,12 @@ hide_streamlit_style = """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# SUPABASE, GOOGLE & GROQ INITIALIZATION
+# SUPABASE, GOOGLE & OPENAI INITIALIZATION
 # ---------------------------------------------------------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "").strip()
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "").strip()
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("❌ Supabase URL or Key is missing in Streamlit Secrets!")
@@ -48,13 +48,13 @@ if not GEMINI_API_KEY:
     st.error("❌ GEMINI_API_KEY is missing in Streamlit Secrets!")
     st.stop()
 
-if not GROQ_API_KEY:
-    st.error("❌ GROQ_API_KEY is missing in Streamlit Secrets!")
+if not OPENAI_API_KEY:
+    st.error("❌ OPENAI_API_KEY is missing in Streamlit Secrets!")
     st.stop()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-groq_client = Groq(api_key=GROQ_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ---------------------------------------------------------
 # CONSTANTS & AUTHENTICATION DICTIONARIES
@@ -88,23 +88,10 @@ VIEW_TEACHER = "🔒 Teacher Secure Portal"
 # HELPER FUNCTIONS
 # ---------------------------------------------------------
 
-def extract_text_from_pdf(pdf_bytes):
-    """Extracts all text from a PDF file for the Groq fallback."""
-    try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text
-    except Exception as e:
-        return f"[Error extracting text from PDF: {e}]"
-
 def analyze_homework_ai(student_name, assignment_title, instructions, file_url, mime_type, file_name, mark_scheme_file=None):
     """
     Tries Google Gemini first (handles PDFs with text & diagrams natively).
-    If Gemini fails (e.g., rate limit), automatically falls back to Groq (text extraction).
+    If Gemini fails, automatically falls back to OpenAI gpt-4o-mini (also handles PDFs).
     """
     
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
@@ -167,42 +154,55 @@ Structure:
         return response.text
 
     # =========================================================
-    # ATTEMPT 2: GROQ FALLBACK (Secondary - Text extraction)
+    # ATTEMPT 2: OPENAI GPT-4O-MINI FALLBACK
     # =========================================================
     except Exception as gemini_error:
-        st.warning(f"⚠️ Google Gemini API limit reached or failed. Switching to Groq fallback... (Reason: {gemini_error})")
+        st.warning(f"⚠️ Google Gemini API limit reached or failed. Switching to OpenAI GPT-4o-mini fallback... (Reason: {gemini_error})")
         
-        groq_prompt = prompt_text + "\n\n[NOTE: The following text was extracted from the student's PDF submission.]\n\n"
+        # Build the message content for OpenAI
+        message_content = [{"type": "text", "text": prompt_text}]
 
-        # Handle Student Submission Text
+        # Handle the Student Submission
         if mime_type == "text/url":
-            groq_prompt += f"\n\n[STUDENT SUBMISSION IS A GOOGLE DRIVE LINK: {file_url}. The AI cannot access external links. Please download and upload directly.]"
+            message_content[0]["text"] += f"\n\n[STUDENT SUBMISSION IS A GOOGLE DRIVE LINK: {file_url}. The AI cannot access external links. Please download and upload directly.]"
         else:
             response = requests.get(file_url)
             if response.status_code != 200:
                 raise Exception(f"Failed to download student file from Supabase: {response.status_code}")
             
-            student_text = extract_text_from_pdf(response.content)
-            groq_prompt += f"\n\n--- STUDENT SUBMISSION TEXT ---\n{student_text}"
+            # Encode the PDF to base64 for OpenAI
+            pdf_base64 = base64.b64encode(response.content).decode('utf-8')
+            message_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:application/pdf;base64,{pdf_base64}"
+                }
+            })
 
-        # Handle Mark Scheme Text
+        # Handle the Mark Scheme File (if provided)
         if mark_scheme_file:
-            try:
-                ms_bytes = mark_scheme_file.getvalue()
-                ms_text = extract_text_from_pdf(ms_bytes)
-                groq_prompt += f"\n\n--- OFFICIAL MARK SCHEME TEXT ---\n{ms_text}"
-            except Exception as e:
-                groq_prompt += f"\n\n[NOTE: Mark scheme could not be processed by fallback. Error: {e}]"
+            ms_bytes = mark_scheme_file.getvalue()
+            ms_base64 = base64.b64encode(ms_bytes).decode('utf-8')
+            message_content.append({
+                "type": "text",
+                "text": "\n\n--- OFFICIAL CAMBRIDGE MARK SCHEME ---\n"
+            })
+            message_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:application/pdf;base64,{ms_base64}"
+                }
+            })
 
-        # Call Groq
-        chat_completion = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": groq_prompt}],
-            model="llama-3.3-70b-versatile",
+        # Call OpenAI
+        chat_completion = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": message_content}],
             temperature=0.1,
             max_tokens=4096,
         )
         
-        st.success("✅ Report generated using Groq (Fallback)!")
+        st.success("✅ Report generated using OpenAI GPT-4o-mini (Fallback)!")
         return chat_completion.choices[0].message.content
 
 
@@ -642,7 +642,6 @@ elif portal_tab == VIEW_TEACHER:
                         if st.button("⚡ Generate AI Draft Report", type="secondary"):
                             with st.spinner("Analyzing student submission against Official Mark Scheme..."):
                                 try:
-                                    # Call the Dual-AI function
                                     generated_draft = analyze_homework_ai(
                                         student_name=s_name, 
                                         assignment_title=a_title, 
