@@ -90,8 +90,8 @@ VIEW_TEACHER = "🔒 Teacher Secure Portal"
 
 def analyze_homework_ai(student_name, assignment_title, instructions, file_url, mime_type, file_name, mark_scheme_file=None):
     """
-    Tries Google Gemini first (handles PDFs with text & diagrams natively).
-    If Gemini fails, automatically falls back to OpenAI gpt-4o-mini (also handles PDFs).
+    Tries Google Gemini first. Falls back to OpenAI if Gemini fails.
+    Raises an explicit error if the AI returns an empty response.
     """
     
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
@@ -113,12 +113,11 @@ Structure:
 """
 
     # =========================================================
-    # ATTEMPT 1: GOOGLE GEMINI (Primary - Handles PDFs natively)
+    # ATTEMPT 1: GOOGLE GEMINI
     # =========================================================
     try:
         contents = [prompt_text]
 
-        # Handle Mark Scheme
         if mark_scheme_file:
             ms_bytes = mark_scheme_file.getvalue()
             ms_upload = gemini_client.files.upload(
@@ -128,7 +127,6 @@ Structure:
             contents.append("OFFICIAL CAMBRIDGE MARK SCHEME ATTACHMENT:")
             contents.append(ms_upload)
 
-        # Handle Student Submission
         if mime_type == "text/url":
             contents.append("STUDENT SUBMISSION ATTACHMENT:")
             contents.append(f"Student Shared Google Drive Link: {file_url}")
@@ -144,25 +142,26 @@ Structure:
             contents.append("STUDENT SUBMISSION ATTACHMENT:")
             contents.append(student_upload)
 
-        # Call Gemini
         response = gemini_client.models.generate_content(
             model="gemini-3.8-flash",
             contents=contents,
         )
         
+        # CHECK FOR EMPTY RESPONSE
+        if not response.text or not response.text.strip():
+            raise Exception("Gemini returned an empty response. The PDF is likely too large (exceeds token limit).")
+            
         st.success("✅ Report generated using Google Gemini!")
         return response.text
 
     # =========================================================
-    # ATTEMPT 2: OPENAI GPT-4O-MINI FALLBACK
+    # ATTEMPT 2: OPENAI FALLBACK
     # =========================================================
     except Exception as gemini_error:
-        st.warning(f"⚠️ Google Gemini API limit reached or failed. Switching to OpenAI GPT-4o-mini fallback... (Reason: {gemini_error})")
+        st.warning(f"⚠️ Gemini failed. Switching to OpenAI... (Reason: {gemini_error})")
         
-        # Build the message content for OpenAI
         message_content = [{"type": "text", "text": prompt_text}]
 
-        # Handle the Student Submission
         if mime_type == "text/url":
             message_content[0]["text"] += f"\n\n[STUDENT SUBMISSION IS A GOOGLE DRIVE LINK: {file_url}. The AI cannot access external links. Please download and upload directly.]"
         else:
@@ -170,7 +169,6 @@ Structure:
             if response.status_code != 200:
                 raise Exception(f"Failed to download student file from Supabase: {response.status_code}")
             
-            # Encode the PDF to base64 for OpenAI
             pdf_base64 = base64.b64encode(response.content).decode('utf-8')
             message_content.append({
                 "type": "image_url",
@@ -179,7 +177,6 @@ Structure:
                 }
             })
 
-        # Handle the Mark Scheme File (if provided)
         if mark_scheme_file:
             ms_bytes = mark_scheme_file.getvalue()
             ms_base64 = base64.b64encode(ms_bytes).decode('utf-8')
@@ -194,7 +191,6 @@ Structure:
                 }
             })
 
-        # Call OpenAI
         chat_completion = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": message_content}],
@@ -202,8 +198,14 @@ Structure:
             max_tokens=4096,
         )
         
+        content = chat_completion.choices[0].message.content
+        
+        # CHECK FOR EMPTY RESPONSE
+        if not content or not content.strip():
+            raise Exception("OpenAI returned an empty response. The PDF is likely too large (exceeds token limit).")
+            
         st.success("✅ Report generated using OpenAI GPT-4o-mini (Fallback)!")
-        return chat_completion.choices[0].message.content
+        return content
 
 
 def get_missing_assignments(student_name):
@@ -638,7 +640,7 @@ elif portal_tab == VIEW_TEACHER:
                 with col_edit:
                     st.subheader("✏️ AI Report Generation & Editing")
                     
-                    if not ai_draft:
+                    if not ai_draft or not ai_draft.strip():
                         if st.button("⚡ Generate AI Draft Report", type="secondary"):
                             with st.spinner("Analyzing student submission against Official Mark Scheme..."):
                                 try:
@@ -665,6 +667,7 @@ elif portal_tab == VIEW_TEACHER:
                         st.info("💡 AI Draft is ready below. Review and edit as needed before final approval.")
                     
                     edited_report = st.text_area("Edit Final Report (Markdown):", value=ai_draft, height=350, key=f"edit_rep_{sub_id}")
+                    st.caption(f"📝 Current draft length: {len(ai_draft)} characters")
                     
                     if st.button("✅ Approve & Publish Report to Student", type="primary"):
                         t_corr_url = None
