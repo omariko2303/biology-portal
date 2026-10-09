@@ -235,7 +235,7 @@ if portal_tab == VIEW_STUDENT:
                         file_name = ""
                         mime_type = ""
                         
-                        # UPLOAD TO SUPABASE STORAGE (Fixes the timeout error)
+                        # UPLOAD TO SUPABASE STORAGE
                         if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
                             raw_bytes = uploaded_file.getvalue()
                             if not raw_bytes or len(raw_bytes) == 0:
@@ -250,14 +250,14 @@ if portal_tab == VIEW_STUDENT:
                             storage_path = f"{matched_student}/{uuid.uuid4()}.{file_ext}"
                             
                             try:
-                                # Upload to Storage
-                                supabase.storage.from_("homework-submissions").upload(
+                                # Upload to Storage (Using 'homework_files' bucket)
+                                supabase.storage.from_("homework_files").upload(
                                     path=storage_path,
                                     file=raw_bytes,
                                     file_options={"content-type": mime_type}
                                 )
                                 # Get the public URL
-                                file_url = supabase.storage.from_("homework-submissions").get_public_url(storage_path)
+                                file_url = supabase.storage.from_("homework_files").get_public_url(storage_path)
                             except Exception as e:
                                 st.error(f"❌ Storage upload failed: {e}")
                                 st.stop()
@@ -283,7 +283,7 @@ if portal_tab == VIEW_STUDENT:
                             "student_name": matched_student,
                             "assignment_title": assignment_title.strip(),
                             "file_name": file_name,
-                            "file_url": file_url, # STORING URL, NOT BYTES
+                            "file_url": file_url, # STORING URL
                             "mime_type": mime_type,
                             "ai_draft": "",
                             "final_report": "",
@@ -630,12 +630,13 @@ elif portal_tab == VIEW_TEACHER:
                             corr_path = f"{s_name}/corrected_{uuid.uuid4()}.{corr_ext}"
                             
                             try:
-                                supabase.storage.from_("homework-submissions").upload(
+                                # Upload to Storage (Using 'homework_files' bucket)
+                                supabase.storage.from_("homework_files").upload(
                                     path=corr_path,
                                     file=corr_bytes,
                                     file_options={"content-type": t_corr_mime}
                                 )
-                                t_corr_url = supabase.storage.from_("homework-submissions").get_public_url(corr_path)
+                                t_corr_url = supabase.storage.from_("homework_files").get_public_url(corr_path)
                             except Exception as e:
                                 st.error(f"Error uploading corrected file: {e}")
                                 st.stop()
