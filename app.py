@@ -1,11 +1,14 @@
 import streamlit as st
 import datetime
 import random
-import base64
 import uuid
 import requests
-import google.generativeai as genai
+import io
 from supabase import create_client
+from google import genai
+from google.genai import types
+from groq import Groq
+from pypdf import PdfReader
 
 # ---------------------------------------------------------
 # PAGE CONFIGURATION & CUSTOM STYLES
@@ -16,7 +19,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Hide Streamlit UI elements
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -31,31 +33,35 @@ hide_streamlit_style = """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# SUPABASE INITIALIZATION
+# SUPABASE, GOOGLE & GROQ INITIALIZATION
 # ---------------------------------------------------------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "").strip()
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("❌ Supabase URL or Key is missing in Streamlit Secrets! Please add them.")
+    st.error("❌ Supabase URL or Key is missing in Streamlit Secrets!")
+    st.stop()
+
+if not GEMINI_API_KEY:
+    st.error("❌ GEMINI_API_KEY is missing in Streamlit Secrets!")
+    st.stop()
+
+if not GROQ_API_KEY:
+    st.error("❌ GROQ_API_KEY is missing in Streamlit Secrets!")
     st.stop()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ---------------------------------------------------------
 # CONSTANTS & AUTHENTICATION DICTIONARIES
 # ---------------------------------------------------------
 TEACHER_PIN = "Omar_Biology_2026_Secure"
-
-STUDENT_PINS = {
-    "1234": "Alia",
-    "5678": "Lara"
-}
-
-PARENT_PINS = {
-    "1111": ("Nahed", "Alia"),
-    "2222": ("Nashwa", "Lara")
-}
+STUDENT_PINS = {"1234": "Alia", "5678": "Lara"}
+PARENT_PINS = {"1111": ("Nahed", "Alia"), "2222": ("Nashwa", "Lara")}
 
 MOTIVATIONAL_QUOTES = [
     "🌟 *'Success is the sum of small efforts, repeated day in and day out.'* — Keep pushing for that A*!",
@@ -81,63 +87,124 @@ VIEW_TEACHER = "🔒 Teacher Secure Portal"
 # ---------------------------------------------------------
 # HELPER FUNCTIONS
 # ---------------------------------------------------------
-def analyze_homework_gemini(student_name, assignment_title, instructions, file_bytes, mime_type, file_name, actual_mark=None, total_mark=None, mark_scheme_bytes=None, mark_scheme_mime=None):
-    api_key = st.secrets.get("GEMINI_API_KEY", "").strip().strip('"').strip("'")
-    if not api_key:
-        raise Exception("GEMINI_API_KEY is missing in Streamlit Secrets!")
 
-    genai.configure(api_key=api_key)
+def extract_text_from_pdf(pdf_bytes):
+    """Extracts all text from a PDF file for the Groq fallback."""
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+        return text
+    except Exception as e:
+        return f"[Error extracting text from PDF: {e}]"
+
+def analyze_homework_ai(student_name, assignment_title, instructions, file_url, mime_type, file_name, mark_scheme_file=None):
+    """
+    Tries Google Gemini first (handles PDFs with text & diagrams natively).
+    If Gemini fails (e.g., rate limit), automatically falls back to Groq (text extraction).
+    """
     
-    generation_config = {
-        "temperature": 0.1,
-        "top_p": 0.95
-    }
-    model = genai.GenerativeModel("gemini-1.5-flash", generation_config=generation_config)
-
-    calc_pct = round((actual_mark / total_mark) * 100, 1) if (actual_mark is not None and total_mark and total_mark > 0) else 0.0
-
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Candidate Name: {student_name}
 Assignment/Quiz Title: {assignment_title}
 General Marking Guidelines: {instructions}
 
-CRITICAL SCORE INSTRUCTIONS:
-The teacher has marked this submission manually. The candidate scored EXACTLY {actual_mark} out of {total_mark} ({calc_pct}%).
-You MUST use this exact mark ({actual_mark}/{total_mark} - {calc_pct}%) as absolute truth. Do NOT recalculate or invent a different total score.
-
 EVALUATION TASK:
-1. Examine the attached Student Submission PDF/Image (or Google Drive link text).
-2. If an Official Cambridge Mark Scheme PDF/Image is provided, compare the student's exact written answers line-by-line against that Mark Scheme.
-3. Identify precisely where the candidate earned marks and where marks were lost (missing keywords, incorrect terminology, incomplete explanations).
+1. Examine the student's submission carefully. This includes typed text, handwritten answers, and scientific diagrams/charts.
+2. If an Official Cambridge Mark Scheme is provided, compare the student's exact written answers line-by-line against that Mark Scheme.
+3. Identify precisely where the candidate earned marks and where marks were lost (missing keywords, incorrect terminology, incomplete explanations, incorrect diagrams).
 4. Provide a structured Markdown report.
 
-Start line 1 with: [SCORE: {calc_pct}%]
-
 Structure:
-1. **Executive Summary & Grade Equivalent** (Reflect score: {actual_mark}/{total_mark} - {calc_pct}%)
+1. **Executive Summary & Grade Equivalent**
 2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
 3. **Specific Biological Misconceptions & Missing Mark Points**
 4. **Actionable Revision Plan for Next Session**
 """
 
-    contents = [prompt_text]
+    # =========================================================
+    # ATTEMPT 1: GOOGLE GEMINI (Primary - Handles PDFs natively)
+    # =========================================================
+    try:
+        contents = [prompt_text]
 
-    if mark_scheme_bytes:
-        ms_mime = mark_scheme_mime if mark_scheme_mime else "application/pdf"
-        contents.append("OFFICIAL CAMBRIDGE MARK SCHEME ATTACHMENT:")
-        contents.append({"mime_type": ms_mime, "data": mark_scheme_bytes})
+        # Handle Mark Scheme
+        if mark_scheme_file:
+            ms_bytes = mark_scheme_file.getvalue()
+            ms_upload = gemini_client.files.upload(
+                file=io.BytesIO(ms_bytes),
+                config=types.UploadFileConfig(mime_type="application/pdf")
+            )
+            contents.append("OFFICIAL CAMBRIDGE MARK SCHEME ATTACHMENT:")
+            contents.append(ms_upload)
 
-    contents.append("STUDENT SUBMISSION ATTACHMENT:")
-    if mime_type == "text/url":
-        url_text = file_bytes.decode("utf-8") if isinstance(file_bytes, bytes) else str(file_bytes)
-        contents.append(f"Student Shared Google Drive Link: {url_text}")
-    elif mime_type and "image" in mime_type:
-        contents.append({"mime_type": mime_type, "data": file_bytes})
-    else:
-        contents.append({"mime_type": "application/pdf", "data": file_bytes})
+        # Handle Student Submission
+        if mime_type == "text/url":
+            contents.append("STUDENT SUBMISSION ATTACHMENT:")
+            contents.append(f"Student Shared Google Drive Link: {file_url}")
+        else:
+            response = requests.get(file_url)
+            if response.status_code != 200:
+                raise Exception(f"Failed to download student file from Supabase: {response.status_code}")
+            
+            student_upload = gemini_client.files.upload(
+                file=io.BytesIO(response.content),
+                config=types.UploadFileConfig(mime_type="application/pdf")
+            )
+            contents.append("STUDENT SUBMISSION ATTACHMENT:")
+            contents.append(student_upload)
 
-    response = model.generate_content(contents)
-    return response.text
+        # Call Gemini
+        response = gemini_client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=contents,
+        )
+        
+        st.success("✅ Report generated using Google Gemini!")
+        return response.text
+
+    # =========================================================
+    # ATTEMPT 2: GROQ FALLBACK (Secondary - Text extraction)
+    # =========================================================
+    except Exception as gemini_error:
+        st.warning(f"⚠️ Google Gemini API limit reached or failed. Switching to Groq fallback... (Reason: {gemini_error})")
+        
+        groq_prompt = prompt_text + "\n\n[NOTE: The following text was extracted from the student's PDF submission.]\n\n"
+
+        # Handle Student Submission Text
+        if mime_type == "text/url":
+            groq_prompt += f"\n\n[STUDENT SUBMISSION IS A GOOGLE DRIVE LINK: {file_url}. The AI cannot access external links. Please download and upload directly.]"
+        else:
+            response = requests.get(file_url)
+            if response.status_code != 200:
+                raise Exception(f"Failed to download student file from Supabase: {response.status_code}")
+            
+            student_text = extract_text_from_pdf(response.content)
+            groq_prompt += f"\n\n--- STUDENT SUBMISSION TEXT ---\n{student_text}"
+
+        # Handle Mark Scheme Text
+        if mark_scheme_file:
+            try:
+                ms_bytes = mark_scheme_file.getvalue()
+                ms_text = extract_text_from_pdf(ms_bytes)
+                groq_prompt += f"\n\n--- OFFICIAL MARK SCHEME TEXT ---\n{ms_text}"
+            except Exception as e:
+                groq_prompt += f"\n\n[NOTE: Mark scheme could not be processed by fallback. Error: {e}]"
+
+        # Call Groq
+        chat_completion = groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": groq_prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            max_tokens=4096,
+        )
+        
+        st.success("✅ Report generated using Groq (Fallback)!")
+        return chat_completion.choices[0].message.content
+
 
 def get_missing_assignments(student_name):
     try:
@@ -227,7 +294,7 @@ if portal_tab == VIEW_STUDENT:
                     if not assignment_title.strip():
                         st.error("❌ Please enter an Assignment Title before submitting.")
                     elif submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)" and uploaded_file is None:
-                        st.error("❌ Upload failed or incomplete. Please select the file again from local downloads, or switch to 'Google Drive Shared Link' above.")
+                        st.error("❌ Upload failed or incomplete. Please select the file again.")
                     elif submit_mode == "🔗 Google Drive Shared Link" and not drive_link.strip():
                         st.error("❌ Please paste a valid Google Drive link before submitting.")
                     else:
@@ -235,7 +302,6 @@ if portal_tab == VIEW_STUDENT:
                         file_name = ""
                         mime_type = ""
                         
-                        # UPLOAD TO SUPABASE STORAGE
                         if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
                             raw_bytes = uploaded_file.getvalue()
                             if not raw_bytes or len(raw_bytes) == 0:
@@ -245,18 +311,15 @@ if portal_tab == VIEW_STUDENT:
                             file_name = uploaded_file.name
                             mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
                             
-                            # Create a unique filename
                             file_ext = file_name.split('.')[-1] if '.' in file_name else 'pdf'
                             storage_path = f"{matched_student}/{uuid.uuid4()}.{file_ext}"
                             
                             try:
-                                # Upload to Storage (Using 'homework_files' bucket)
                                 supabase.storage.from_("homework_files").upload(
                                     path=storage_path,
                                     file=raw_bytes,
                                     file_options={"content-type": mime_type}
                                 )
-                                # Get the public URL
                                 file_url = supabase.storage.from_("homework_files").get_public_url(storage_path)
                             except Exception as e:
                                 st.error(f"❌ Storage upload failed: {e}")
@@ -283,7 +346,7 @@ if portal_tab == VIEW_STUDENT:
                             "student_name": matched_student,
                             "assignment_title": assignment_title.strip(),
                             "file_name": file_name,
-                            "file_url": file_url, # STORING URL
+                            "file_url": file_url,
                             "mime_type": mime_type,
                             "ai_draft": "",
                             "final_report": "",
@@ -575,39 +638,27 @@ elif portal_tab == VIEW_TEACHER:
                 with col_edit:
                     st.subheader("✏️ AI Report Generation & Editing")
                     
-                    c_m1, c_m2 = st.columns(2)
-                    with c_m1:
-                        teacher_raw_score = st.number_input("Marks Obtained:", min_value=0.0, max_value=200.0, value=47.0, step=1.0, key=f"raw_{sub_id}")
-                    with c_m2:
-                        teacher_max_score = st.number_input("Total Max Marks:", min_value=1.0, max_value=200.0, value=67.0, step=1.0, key=f"max_{sub_id}")
-                    
                     if not ai_draft:
                         if st.button("⚡ Generate AI Draft Report", type="secondary"):
                             with st.spinner("Analyzing student submission against Official Mark Scheme..."):
                                 try:
-                                    ms_bytes = ms_file.getvalue() if ms_file else None
-                                    ms_mime = ms_file.type if ms_file else None
-                                    
-                                    # Fetch the file bytes for Gemini from the URL
-                                    if m_type == "text/url":
-                                        gemini_file_bytes = f_url.encode("utf-8")
-                                    else:
-                                        response = requests.get(f_url)
-                                        gemini_file_bytes = response.content
-                                    
-                                    generated_draft = analyze_homework_gemini(
-                                        s_name, a_title, teacher_instructions, gemini_file_bytes, m_type, f_name,
-                                        actual_mark=teacher_raw_score, total_mark=teacher_max_score,
-                                        mark_scheme_bytes=ms_bytes, mark_scheme_mime=ms_mime
+                                    # Call the Dual-AI function
+                                    generated_draft = analyze_homework_ai(
+                                        student_name=s_name, 
+                                        assignment_title=a_title, 
+                                        instructions=teacher_instructions, 
+                                        file_url=f_url, 
+                                        mime_type=m_type, 
+                                        file_name=f_name,
+                                        mark_scheme_file=ms_file
                                     )
-                                    calc_percentage = round((teacher_raw_score / teacher_max_score) * 100, 1) if teacher_max_score > 0 else 0.0
                                     
                                     supabase.table("submissions").update({
                                         "ai_draft": generated_draft,
-                                        "estimated_score": calc_percentage
+                                        "estimated_score": 0.0
                                     }).eq("id", sub_id).execute()
                                     
-                                    st.success("✅ Draft generated with accurate marks & mark scheme alignment!")
+                                    st.success("✅ AI Draft generated successfully! Review below.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Error generating draft: {e}")
@@ -630,7 +681,6 @@ elif portal_tab == VIEW_TEACHER:
                             corr_path = f"{s_name}/corrected_{uuid.uuid4()}.{corr_ext}"
                             
                             try:
-                                # Upload to Storage (Using 'homework_files' bucket)
                                 supabase.storage.from_("homework_files").upload(
                                     path=corr_path,
                                     file=corr_bytes,
