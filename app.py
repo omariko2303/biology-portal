@@ -91,9 +91,10 @@ VIEW_TEACHER = "🔒 Teacher Secure Portal"
 def analyze_homework_ai(student_name, assignment_title, instructions, file_url, mime_type, file_name, mark_scheme_file=None):
     """
     Tries Google Gemini first. Falls back to OpenAI if Gemini fails.
+    OpenAI fallback uses the Responses API which supports PDFs natively.
     Raises an explicit error if the AI returns an empty response.
     """
-    
+
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Candidate Name: {student_name}
 Assignment/Quiz Title: {assignment_title}
@@ -134,7 +135,7 @@ Structure:
             response = requests.get(file_url)
             if response.status_code != 200:
                 raise Exception(f"Failed to download student file from Supabase: {response.status_code}")
-            
+
             student_upload = gemini_client.files.upload(
                 file=io.BytesIO(response.content),
                 config=types.UploadFileConfig(mime_type="application/pdf")
@@ -146,65 +147,84 @@ Structure:
             model="gemini-3.8-flash",
             contents=contents,
         )
-        
+
         # CHECK FOR EMPTY RESPONSE
         if not response.text or not response.text.strip():
             raise Exception("Gemini returned an empty response. The PDF is likely too large (exceeds token limit).")
-            
+
         st.success("✅ Report generated using Google Gemini!")
         return response.text
 
     # =========================================================
-    # ATTEMPT 2: OPENAI FALLBACK
+    # ATTEMPT 2: OPENAI FALLBACK (Responses API + input_file for PDFs)
     # =========================================================
     except Exception as gemini_error:
         st.warning(f"⚠️ Gemini failed. Switching to OpenAI... (Reason: {gemini_error})")
-        
-        message_content = [{"type": "text", "text": prompt_text}]
 
+        content_items = [{"type": "input_text", "text": prompt_text}]
+
+        # --- Student submission ---
         if mime_type == "text/url":
-            message_content[0]["text"] += f"\n\n[STUDENT SUBMISSION IS A GOOGLE DRIVE LINK: {file_url}. The AI cannot access external links. Please download and upload directly.]"
+            content_items[0]["text"] += (
+                f"\n\n[STUDENT SUBMISSION IS A GOOGLE DRIVE LINK: {file_url}. "
+                f"The AI cannot access external links. Please download and upload directly.]"
+            )
         else:
-            response = requests.get(file_url)
-            if response.status_code != 200:
-                raise Exception(f"Failed to download student file from Supabase: {response.status_code}")
-            
-            pdf_base64 = base64.b64encode(response.content).decode('utf-8')
-            message_content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:application/pdf;base64,{pdf_base64}"
-                }
-            })
+            r = requests.get(file_url)
+            if r.status_code != 200:
+                raise Exception(f"Failed to download student file from Supabase: {r.status_code}")
 
+            b64 = base64.b64encode(r.content).decode("utf-8")
+            is_image = bool(mime_type) and mime_type.startswith("image/")
+
+            if is_image:
+                content_items.append({
+                    "type": "input_image",
+                    "image_url": f"data:{mime_type};base64,{b64}",
+                })
+            else:
+                content_items.append({
+                    "type": "input_file",
+                    "filename": file_name or "submission.pdf",
+                    "file_data": f"data:application/pdf;base64,{b64}",
+                })
+
+        # --- Mark scheme attachment ---
         if mark_scheme_file:
             ms_bytes = mark_scheme_file.getvalue()
-            ms_base64 = base64.b64encode(ms_bytes).decode('utf-8')
-            message_content.append({
-                "type": "text",
-                "text": "\n\n--- OFFICIAL CAMBRIDGE MARK SCHEME ---\n"
-            })
-            message_content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:application/pdf;base64,{ms_base64}"
-                }
+            ms_b64 = base64.b64encode(ms_bytes).decode("utf-8")
+            ms_type = getattr(mark_scheme_file, "type", "") or "application/pdf"
+            ms_name = getattr(mark_scheme_file, "name", "mark_scheme.pdf")
+
+            content_items.append({
+                "type": "input_text",
+                "text": "\n\n--- OFFICIAL CAMBRIDGE MARK SCHEME ---\n",
             })
 
-        chat_completion = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": message_content}],
-            temperature=0.1,
-            max_tokens=4096,
+            if ms_type.startswith("image/"):
+                content_items.append({
+                    "type": "input_image",
+                    "image_url": f"data:{ms_type};base64,{ms_b64}",
+                })
+            else:
+                content_items.append({
+                    "type": "input_file",
+                    "filename": ms_name,
+                    "file_data": f"data:application/pdf;base64,{ms_b64}",
+                })
+
+        # --- Call the Responses API (supports PDFs natively) ---
+        oa_response = openai_client.responses.create(
+            model="gpt-4o",
+            input=[{"role": "user", "content": content_items}],
         )
-        
-        content = chat_completion.choices[0].message.content
-        
-        # CHECK FOR EMPTY RESPONSE
+
+        content = oa_response.output_text
+
         if not content or not content.strip():
-            raise Exception("OpenAI returned an empty response. The PDF is likely too large (exceeds token limit).")
-            
-        st.success("✅ Report generated using OpenAI GPT-4o-mini (Fallback)!")
+            raise Exception("OpenAI returned an empty response. The PDF may exceed the token limit.")
+
+        st.success("✅ Report generated using OpenAI GPT-4o (Fallback)!")
         return content
 
 
@@ -212,7 +232,7 @@ def get_missing_assignments(student_name):
     try:
         deadlines_res = supabase.table("deadlines").select("*").execute()
         all_deadlines = [(row["assignment_title"], row["due_date"]) for row in deadlines_res.data]
-        
+
         subs_res = supabase.table("submissions").select("assignment_title").ilike("student_name", student_name).execute()
         submitted_titles = set(row["assignment_title"].lower().strip() for row in subs_res.data)
     except Exception as e:
@@ -220,7 +240,7 @@ def get_missing_assignments(student_name):
 
     missing = []
     now_dt = datetime.datetime.now()
-    
+
     for d_title, d_date_str in all_deadlines:
         if d_title.lower().strip() not in submitted_titles:
             try:
@@ -247,51 +267,51 @@ portal_tab = st.selectbox(
 if portal_tab == VIEW_STUDENT:
     st.header("Student Portal")
     s_tab1, s_tab2 = st.tabs(["📤 Submit Homework", "📊 My Results & Manage Submissions"])
-    
+
     with s_tab1:
         st.subheader("Upload New Assignment")
         student_pin_sub = st.text_input("Enter Your 4-Digit Student PIN", type="password", max_chars=4, key="st_sub_pin")
-        
+
         if student_pin_sub:
             matched_student = STUDENT_PINS.get(student_pin_sub)
             if matched_student:
                 st.success(f"🔓 Authenticated as: **{matched_student}**")
-                
+
                 try:
                     deadline_records = supabase.table("deadlines").select("*").order("id", desc=True).execute().data
                 except:
                     deadline_records = []
-                
+
                 assignment_title = st.text_input("Assignment Title", placeholder="e.g., Ch 3 Osmosis HW")
-                
+
                 if deadline_records:
                     st.info("📅 **Active Homework Deadlines:**")
                     for d in deadline_records:
                         st.caption(f"• **{d['assignment_title']}**: Due by **{d['due_date']}**")
-                
+
                 submit_mode = st.radio(
                     "Select How You Want to Submit:",
                     ["📁 Direct File Upload (Downloaded PDF/Image)", "🔗 Google Drive Shared Link"],
                     horizontal=True
                 )
-                
+
                 uploaded_file = None
                 drive_link = ""
-                
+
                 if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
                     st.caption("💡 **Tip:** If using Google Drive on mobile, download the file to your phone first before uploading here.")
                     uploaded_file = st.file_uploader(
-                        "Upload Homework File (PDF, PNG, JPG)", 
+                        "Upload Homework File (PDF, PNG, JPG)",
                         type=["pdf", "png", "jpg", "jpeg"],
                         key="mobile_hw_uploader"
                     )
                 else:
                     drive_link = st.text_input(
-                        "Paste Google Drive Shared Link:", 
+                        "Paste Google Drive Shared Link:",
                         placeholder="https://drive.google.com/file/d/..."
                     )
                     st.caption("⚠️ Ensure link sharing is set to **'Anyone with the link can view'**.")
-                
+
                 if st.button("🚀 Submit Homework", type="primary"):
                     if not assignment_title.strip():
                         st.error("❌ Please enter an Assignment Title before submitting.")
@@ -303,19 +323,19 @@ if portal_tab == VIEW_STUDENT:
                         file_url = ""
                         file_name = ""
                         mime_type = ""
-                        
+
                         if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
                             raw_bytes = uploaded_file.getvalue()
                             if not raw_bytes or len(raw_bytes) == 0:
                                 st.error("❌ Uploaded file is empty. Please re-select the file.")
                                 st.stop()
-                            
+
                             file_name = uploaded_file.name
                             mime_type = uploaded_file.type if uploaded_file.type else "application/pdf"
-                            
+
                             file_ext = file_name.split('.')[-1] if '.' in file_name else 'pdf'
                             storage_path = f"{matched_student}/{uuid.uuid4()}.{file_ext}"
-                            
+
                             try:
                                 supabase.storage.from_("homework_files").upload(
                                     path=storage_path,
@@ -330,10 +350,10 @@ if portal_tab == VIEW_STUDENT:
                             file_url = drive_link.strip()
                             file_name = "Google_Drive_Link.txt"
                             mime_type = "text/url"
-                            
+
                         now_dt = datetime.datetime.now()
                         now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-                        
+
                         is_late = 0
                         try:
                             d_res = supabase.table("deadlines").select("*").ilike("assignment_title", assignment_title.strip()).execute().data
@@ -343,7 +363,7 @@ if portal_tab == VIEW_STUDENT:
                                     is_late = 1
                         except:
                             pass
-                        
+
                         submission_data = {
                             "student_name": matched_student,
                             "assignment_title": assignment_title.strip(),
@@ -360,17 +380,17 @@ if portal_tab == VIEW_STUDENT:
                             "submitted_at": now_str,
                             "is_late": is_late
                         }
-                        
+
                         try:
                             supabase.table("submissions").insert(submission_data).execute()
                             st.balloons()
                             selected_quote = random.choice(MOTIVATIONAL_QUOTES)
-                            
+
                             if is_late == 1:
                                 st.warning(f"⚠️ Homework submitted for **{matched_student}**, but logged as **LATE** (Past set deadline).")
                             else:
                                 st.success(f"⚡ Homework submitted instantly for **{matched_student}**!")
-                                
+
                             st.info(f"💡 **Exam Tip & Motivation:**\n\n{selected_quote}")
                         except Exception as e:
                             st.error(f"❌ Database error during submission: {e}")
@@ -382,7 +402,7 @@ if portal_tab == VIEW_STUDENT:
     with s_tab2:
         st.subheader("🔒 View Performance & Manage Submissions")
         entered_student_pin = st.text_input("Enter Your 4-Digit PIN", type="password", max_chars=4, key="student_pin_view")
-        
+
         if entered_student_pin:
             matched_student = STUDENT_PINS.get(entered_student_pin)
             if matched_student:
@@ -392,7 +412,7 @@ if portal_tab == VIEW_STUDENT:
                     results = res.data
                 except Exception as e:
                     results = []
-                
+
                 if results:
                     st.subheader(f"📊 Assessment Reports for {matched_student}")
                     for i, row in enumerate(reversed(results)):
@@ -406,9 +426,9 @@ if portal_tab == VIEW_STUDENT:
                         status = row["status"]
                         sub_time = row["submitted_at"]
                         is_late = row["is_late"]
-                        
+
                         late_badge = " ⚠️ **(SUBMITTED LATE)**" if is_late == 1 else ""
-                        
+
                         if status == 'APPROVED':
                             st.success(f"📚 **{a_title}** — **APPROVED** ({sub_time}){late_badge}")
                             orig_index = len(results) - 1 - i
@@ -421,7 +441,7 @@ if portal_tab == VIEW_STUDENT:
                                     st.info(f"🎯 **Consistent Mastery!** Maintained your score of {score:.1f}%.")
                                 else:
                                     st.warning(f"📈 Score dropped by **{abs(diff):.1f}%**. Review feedback below!")
-                            
+
                             st.markdown(report)
                             if t_url:
                                 st.markdown(f"📥 **[Download Marked File ({t_name})]({t_url})**")
@@ -449,56 +469,56 @@ if portal_tab == VIEW_STUDENT:
 # ---------------------------------------------------------
 elif portal_tab == VIEW_PARENT:
     st.header("👨‍👩‍👧 Parent Analytics Dashboard")
-    
+
     parent_pin_input = st.text_input("Enter Parent 4-Digit PIN", type="password", max_chars=4, key="parent_pin_entry")
-    
+
     if parent_pin_input:
         parent_info = PARENT_PINS.get(parent_pin_input)
         if parent_info:
             parent_name, student_name = parent_info
             st.success(f"🔓 Welcome, {parent_name}! Viewing performance report for: **{student_name}**")
-            
+
             missing_hw = get_missing_assignments(student_name)
             if missing_hw:
                 st.error("🚨 **UNSUBMITTED / OVERDUE ASSIGNMENTS DETECTED:**")
                 for m_title, m_due in missing_hw:
                     st.write(f"❌ **{m_title}** was due on **{m_due}** and has **NOT** been submitted yet.")
                 st.divider()
-            
+
             try:
                 p_res = supabase.table("submissions").select("*").ilike("student_name", student_name).eq("status", "APPROVED").order("id", desc=False).execute()
                 p_results = p_res.data
-                
+
                 l_res = supabase.table("submissions").select("*").ilike("student_name", student_name).eq("is_late", 1).order("id", desc=True).execute()
                 late_notices = l_res.data
             except:
                 p_results = []
                 late_notices = []
-            
+
             if late_notices:
                 st.warning(f"⚠️ **COMPLETED LATE:** {student_name} submitted assignments past deadline:")
                 for l in late_notices:
                     st.caption(f"• **{l['assignment_title']}** (Submitted: {l['submitted_at']})")
                 st.divider()
-            
+
             if p_results:
                 scores = [row["estimated_score"] for row in p_results]
                 avg_score = sum(scores) / len(scores) if scores else 0
                 latest_score = scores[-1]
-                
+
                 if latest_score >= 85.0 or (len(scores) > 1 and scores[-1] > scores[-2]):
                     st.snow()
                     st.success(f"🎉 **Achievement Highlight!** {student_name} scored **{latest_score:.1f}%** on her latest assignment!")
-                
+
                 st.subheader(f"📈 Performance Tracking for {student_name}")
                 chart_data = {row["assignment_title"]: row["estimated_score"] for row in p_results}
                 st.line_chart(chart_data)
-                
+
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Average Score 📊", f"{avg_score:.1f}%")
                 m2.metric("Latest Score 🎯", f"{latest_score:.1f}%")
                 m3.metric("Assignments Completed 📝", len(p_results))
-                
+
                 st.divider()
                 st.subheader("⚠️ Detailed Evaluation Reports & Key Takeaways")
                 for row in reversed(p_results):
@@ -518,15 +538,15 @@ elif portal_tab == VIEW_PARENT:
 elif portal_tab == VIEW_TEACHER:
     st.header("🔒 Teacher Secure Dashboard")
     pin = st.text_input("Enter Teacher Secret Passcode", type="password", key="teacher_passcode_entry")
-    
+
     if pin == TEACHER_PIN:
         st.success("🔓 Authorized Teacher Access Granted")
-        
+
         with st.expander("📅 **Set Assignment Deadlines**"):
             d_title = st.text_input("Assignment Title for Deadline", placeholder="e.g., Ch 3 Osmosis HW")
             d_date = st.date_input("Due Date")
             d_time = st.time_input("Due Time", value=datetime.time(23, 59))
-            
+
             if st.button("📌 Save Assignment Deadline"):
                 full_due_str = f"{d_date.strftime('%Y-%m-%d')} {d_time.strftime('%H:%M:%S')}"
                 try:
@@ -537,12 +557,12 @@ elif portal_tab == VIEW_TEACHER:
                     st.success(f"✅ Deadline set for '{d_title}' at {full_due_str}")
                 except Exception as e:
                     st.error(f"Error saving deadline: {e}")
-        
+
         with st.expander("🚨 **Missing & Late Submissions Overview**"):
             st.subheader("Student Submission Compliance Breakdown")
             for s_pin, s_name in STUDENT_PINS.items():
                 st.markdown(f"### 👤 Student: **{s_name}**")
-                
+
                 m_hw = get_missing_assignments(s_name)
                 if m_hw:
                     st.error(f"❌ **Didn't Do Homework ({len(m_hw)} Missing):**")
@@ -550,12 +570,12 @@ elif portal_tab == VIEW_TEACHER:
                         st.caption(f"• **{m_t}** (Deadline passed on {m_d})")
                 else:
                     st.success("✅ No overdue unsubmitted homework!")
-                
+
                 try:
                     late_hw = supabase.table("submissions").select("*").ilike("student_name", s_name).eq("is_late", 1).execute().data
                 except:
                     late_hw = []
-                
+
                 if late_hw:
                     st.warning(f"⚠️ **Completed Late ({len(late_hw)} Submissions):**")
                     for l in late_hw:
@@ -571,37 +591,37 @@ elif portal_tab == VIEW_TEACHER:
             height=120
         )
         st.divider()
-        
+
         try:
             pending_count = len(supabase.table("submissions").select("*").eq("status", "PENDING").execute().data)
             approved_count = len(supabase.table("submissions").select("*").eq("status", "APPROVED").execute().data)
             late_count = len(supabase.table("submissions").select("*").eq("is_late", 1).execute().data)
         except:
             pending_count, approved_count, late_count = 0, 0, 0
-        
+
         m1, m2, m3 = st.columns(3)
         m1.metric("Pending Reviews ⏳", pending_count)
         m2.metric("Approved Reports ✅", approved_count)
         m3.metric("Late Submissions ⚠️️", late_count)
         st.divider()
-        
+
         dashboard_mode = st.radio(
-            "Select Management Action:", 
+            "Select Management Action:",
             ["⏳ Review Pending Submissions & Generate Follow-up Questions", "✅ Manage Approved Reports"],
             horizontal=True
         )
         st.divider()
-        
+
         if dashboard_mode == "⏳ Review Pending Submissions & Generate Follow-up Questions":
             try:
                 pending_list = supabase.table("submissions").select("*").eq("status", "PENDING").execute().data
             except:
                 pending_list = []
-            
+
             if pending_list:
                 options = {f"ID #{row['id']} | Student: {row['student_name']} - {row['assignment_title']} ({'⚠️ LATE' if row['is_late']==1 else 'ON TIME'})": row for row in pending_list}
                 selected_option = st.selectbox("Select Submission:", list(options.keys()))
-                
+
                 selected_row = options[selected_option]
                 sub_id = selected_row["id"]
                 s_name = selected_row["student_name"]
@@ -612,12 +632,12 @@ elif portal_tab == VIEW_TEACHER:
                 ai_draft = selected_row["ai_draft"]
                 sub_time = selected_row["submitted_at"]
                 is_late = selected_row["is_late"]
-                
+
                 if is_late == 1:
                     st.error(f"🚨 **LATE SUBMISSION NOTIFICATION:** {s_name} submitted this assignment after deadline on {sub_time}.")
-                
+
                 col_file, col_edit = st.columns([1, 1])
-                
+
                 with col_file:
                     st.subheader(f"📄 Original File ({f_name})")
                     if m_type == "text/url":
@@ -627,61 +647,61 @@ elif portal_tab == VIEW_TEACHER:
                         st.image(f_url, caption=f"Submitted by {s_name}", use_column_width=True)
                     else:
                         st.markdown(f"[📄 Click here to view/download the Student's PDF]({f_url})")
-                    
+
                     st.divider()
                     st.subheader("📋 Official Cambridge Mark Scheme (PDF / Image)")
                     st.caption("Upload the official mark scheme PDF or answer key image for this specific quiz/exam.")
                     ms_file = st.file_uploader("Upload Mark Scheme PDF/Image", type=["pdf", "png", "jpg", "jpeg"], key=f"ms_up_{sub_id}")
-                    
+
                     st.divider()
                     st.subheader("✍ Upload Teacher Marked File for Student")
                     corrected_file_upload = st.file_uploader("Upload corrected PDF notes for student", type=["pdf", "png", "jpg"], key=f"up_{sub_id}")
-                
+
                 with col_edit:
                     st.subheader("✏️ AI Report Generation & Editing")
-                    
+
                     if not ai_draft or not ai_draft.strip():
                         if st.button("⚡ Generate AI Draft Report", type="secondary"):
                             with st.spinner("Analyzing student submission against Official Mark Scheme..."):
                                 try:
                                     generated_draft = analyze_homework_ai(
-                                        student_name=s_name, 
-                                        assignment_title=a_title, 
-                                        instructions=teacher_instructions, 
-                                        file_url=f_url, 
-                                        mime_type=m_type, 
+                                        student_name=s_name,
+                                        assignment_title=a_title,
+                                        instructions=teacher_instructions,
+                                        file_url=f_url,
+                                        mime_type=m_type,
                                         file_name=f_name,
                                         mark_scheme_file=ms_file
                                     )
-                                    
+
                                     supabase.table("submissions").update({
                                         "ai_draft": generated_draft,
                                         "estimated_score": 0.0
                                     }).eq("id", sub_id).execute()
-                                    
+
                                     st.success("✅ AI Draft generated successfully! Review below.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Error generating draft: {e}")
                     else:
                         st.info("💡 AI Draft is ready below. Review and edit as needed before final approval.")
-                    
+
                     edited_report = st.text_area("Edit Final Report (Markdown):", value=ai_draft, height=350, key=f"edit_rep_{sub_id}")
                     st.caption(f"📝 Current draft length: {len(ai_draft)} characters")
-                    
+
                     if st.button("✅ Approve & Publish Report to Student", type="primary"):
                         t_corr_url = None
                         t_corr_name = ""
                         t_corr_mime = ""
-                        
+
                         if corrected_file_upload:
                             corr_bytes = corrected_file_upload.getvalue()
                             t_corr_name = corrected_file_upload.name
                             t_corr_mime = corrected_file_upload.type if corrected_file_upload.type else "application/pdf"
-                            
+
                             corr_ext = t_corr_name.split('.')[-1] if '.' in t_corr_name else 'pdf'
                             corr_path = f"{s_name}/corrected_{uuid.uuid4()}.{corr_ext}"
-                            
+
                             try:
                                 supabase.storage.from_("homework_files").upload(
                                     path=corr_path,
@@ -692,7 +712,7 @@ elif portal_tab == VIEW_TEACHER:
                             except Exception as e:
                                 st.error(f"Error uploading corrected file: {e}")
                                 st.stop()
-                        
+
                         try:
                             supabase.table("submissions").update({
                                 "final_report": edited_report,
@@ -701,7 +721,7 @@ elif portal_tab == VIEW_TEACHER:
                                 "teacher_corrected_name": t_corr_name,
                                 "teacher_corrected_mime": t_corr_mime
                             }).eq("id", sub_id).execute()
-                            
+
                             st.success("🎉 Report approved and published successfully!")
                             st.balloons()
                             st.rerun()
@@ -709,22 +729,22 @@ elif portal_tab == VIEW_TEACHER:
                             st.error(f"❌ Error approving report: {e}")
             else:
                 st.info("🎉 No pending submissions to review right now!")
-        
+
         elif dashboard_mode == "✅ Manage Approved Reports":
             try:
                 appr_list = supabase.table("submissions").select("*").eq("status", "APPROVED").execute().data
             except:
                 appr_list = []
-            
+
             if appr_list:
                 options = {f"ID #{row['id']} | Student: {row['student_name']} - {row['assignment_title']} (Score: {row['estimated_score']}%)": row for row in appr_list}
                 selected_option = st.selectbox("Select Approved Report to Manage:", list(options.keys()), key="manage_appr_select")
-                
+
                 selected_row = options[selected_option]
                 sub_id = selected_row["id"]
-                
+
                 st.markdown(selected_row["final_report"])
-                
+
                 col_m1, col_m2 = st.columns(2)
                 with col_m1:
                     if st.button("🔄 Revert Report Back to Pending", key=f"revert_{sub_id}"):
@@ -744,11 +764,8 @@ elif portal_tab == VIEW_TEACHER:
                             st.error(f"Error deleting: {e}")
             else:
                 st.info("No approved reports.")
-                
+
     elif pin != "":
         st.error("🔒 Incorrect Teacher Passcode!")
     else:
         st.info("🔒 Enter teacher secret passcode.")
-       
- 
-             
