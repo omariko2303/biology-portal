@@ -95,7 +95,10 @@ def _normalize_title(t: str) -> str:
 
 
 def _titles_match(deadline_title: str, submission_title: str) -> bool:
-    """Fuzzy match between a deadline title and a submission title."""
+    """
+    Fuzzy match between a deadline title and a submission title.
+    Handles: case, punctuation, extra words, word order differences.
+    """
     a = _normalize_title(deadline_title)
     b = _normalize_title(submission_title)
     if not a or not b:
@@ -292,7 +295,7 @@ Then continue with the report sections using these exact headers:
                     "file_data": f"data:application/pdf;base64,{ms_b64}",
                 })
 
-        # ADDED STRICT SYSTEM PROMPT HERE
+        # STRICT SYSTEM PROMPT FOR OPENAI
         oa_response = openai_client.responses.create(
             model="gpt-4o",
             input=[
@@ -756,6 +759,14 @@ elif portal_tab == VIEW_TEACHER:
                                     st.error(f"❌ Error generating draft: {e}")
                     else:
                         st.info("💡 AI Draft is ready below. Review and edit as needed before final approval.")
+                        
+                        # CLEAR DRAFT BUTTON
+                        if st.button("🔄 Clear Draft & Regenerate", type="secondary"):
+                            supabase.table("submissions").update({
+                                "ai_draft": "",
+                                "estimated_score": 0.0
+                            }).eq("id", sub_id).execute()
+                            st.rerun()
 
                     edited_report = st.text_area("Edit Final Report (Markdown):", value=ai_draft, height=350, key=f"edit_rep_{sub_id}")
                     st.caption(f"📝 Current draft length: {len(ai_draft)} characters")
