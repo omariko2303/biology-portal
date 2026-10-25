@@ -95,20 +95,15 @@ def _normalize_title(t: str) -> str:
 
 
 def _titles_match(deadline_title: str, submission_title: str) -> bool:
-    """
-    Fuzzy match between a deadline title and a submission title.
-    Handles: case, punctuation, extra words, word order differences.
-    """
+    """Fuzzy match between a deadline title and a submission title."""
     a = _normalize_title(deadline_title)
     b = _normalize_title(submission_title)
     if not a or not b:
         return False
     if a == b:
         return True
-    # One contains the other
     if a in b or b in a:
         return True
-    # Word-overlap ratio
     a_words = set(w for w in a.split() if len(w) > 2)
     b_words = set(w for w in b.split() if len(w) > 2)
     if not a_words or not b_words:
@@ -125,14 +120,13 @@ def get_missing_assignments(student_name):
 
         subs_res = supabase.table("submissions").select("assignment_title").ilike("student_name", student_name).execute()
         submitted_titles = [row["assignment_title"] for row in subs_res.data]
-    except Exception as e:
+    except Exception:
         return []
 
     missing = []
     now_dt = datetime.datetime.now()
 
     for d_title, d_date_str in all_deadlines:
-        # Fuzzy match against ALL submissions for this student
         already_submitted = any(_titles_match(d_title, st) for st in submitted_titles)
         if already_submitted:
             continue
@@ -151,27 +145,25 @@ def extract_score_from_report(report: str):
         return None
     text = report
 
-    # Priority 1: "Overall Score: 78%" style
-    m = re.search(r"(?:overall|total|final|estimated)\s*(?:score|mark)[^\d]{0,10}(\d{1,3})\s*%", text, re.IGNORECASE)
-    if m:
-        v = int(m.group(1))
-        if 0 <= v <= 100:
-            return float(v)
+    m = re.search(r"OVERALL SCORE:\s*(\d{1,3})\s*%", text, re.IGNORECASE)
+    if m and 0 <= int(m.group(1)) <= 100:
+        return float(m.group(1))
 
-    # Priority 2: "X / Y" fraction
+    m = re.search(r"(?:overall|total|final|estimated)\s*(?:score|mark)[^\d]{0,10}(\d{1,3})\s*%", text, re.IGNORECASE)
+    if m and 0 <= int(m.group(1)) <= 100:
+        return float(m.group(1))
+
     m = re.search(r"(\d{1,3})\s*/\s*(\d{1,3})\s*(?:marks?|/\s*\d+)?", text)
     if m:
         num, den = int(m.group(1)), int(m.group(2))
         if den > 0 and num <= den:
             return round(num / den * 100, 1)
 
-    # Priority 3: any bare percentage
     matches = re.findall(r"(\d{1,3})\s*%", text)
     if matches:
         vals = [int(v) for v in matches if 0 <= int(v) <= 100]
         if vals:
             return float(max(vals))
-
     return None
 
 
@@ -179,7 +171,6 @@ def analyze_homework_ai(student_name, assignment_title, instructions, file_url, 
     """
     Tries Google Gemini first. Falls back to OpenAI if Gemini fails.
     OpenAI fallback uses the Responses API which supports PDFs natively.
-    Raises an explicit error if the AI returns an empty response.
     """
 
     prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
@@ -197,11 +188,11 @@ IMPORTANT: At the very top of your report, on its own line, write the final mark
 **OVERALL SCORE: X%**
 (where X is a number between 0 and 100, representing the candidate's estimated percentage.)
 
-Then continue with the report sections:
-1. **Executive Summary & Grade Equivalent**
-2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
-3. **Specific Biological Misconceptions & Missing Mark Points**
-4. **Actionable Revision Plan for Next Session**
+Then continue with the report sections using these exact headers:
+### 1. **Executive Summary & Grade Equivalent**
+### 2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
+### 3. **Specific Biological Misconceptions & Missing Mark Points**
+### 4. **Actionable Revision Plan for Next Session**
 """
 
     # =========================================================
@@ -246,7 +237,7 @@ Then continue with the report sections:
         return response.text
 
     # =========================================================
-    # ATTEMPT 2: OPENAI FALLBACK (Responses API + input_file for PDFs)
+    # ATTEMPT 2: OPENAI FALLBACK (Responses API)
     # =========================================================
     except Exception as gemini_error:
         st.warning(f"⚠️ Gemini failed. Switching to OpenAI... (Reason: {gemini_error})")
@@ -301,9 +292,16 @@ Then continue with the report sections:
                     "file_data": f"data:application/pdf;base64,{ms_b64}",
                 })
 
+        # ADDED STRICT SYSTEM PROMPT HERE
         oa_response = openai_client.responses.create(
             model="gpt-4o",
-            input=[{"role": "user", "content": content_items}],
+            input=[
+                {
+                    "role": "system", 
+                    "content": "You are a strict Cambridge IGCSE Biology Examiner. You must output Markdown exactly as requested. Do not add any conversational filler, greetings, or sign-offs. Start immediately with the Overall Score."
+                },
+                {"role": "user", "content": content_items}
+            ],
         )
 
         content = oa_response.output_text
@@ -477,7 +475,7 @@ if portal_tab == VIEW_STUDENT:
                 try:
                     res = supabase.table("submissions").select("*").ilike("student_name", matched_student).order("id", desc=False).execute()
                     results = res.data
-                except Exception as e:
+                except Exception:
                     results = []
 
                 if results:
@@ -741,7 +739,6 @@ elif portal_tab == VIEW_TEACHER:
                                         mark_scheme_file=ms_file
                                     )
 
-                                    # Try to auto-extract a score from the AI report
                                     auto_score = extract_score_from_report(generated_draft)
                                     score_to_save = auto_score if auto_score is not None else 0.0
 
@@ -766,7 +763,6 @@ elif portal_tab == VIEW_TEACHER:
                     st.divider()
                     st.markdown("### 📊 Final Score")
 
-                    # Auto-detect a score from the AI report to prefill the input
                     detected = extract_score_from_report(edited_report)
                     current_score = float(selected_row.get("estimated_score") or 0.0)
                     default_score = detected if detected is not None else current_score
