@@ -1,4 +1,6 @@
 streamlit
 supabase
+python-dotenv
 google-genai
 openai
+requests
