@@ -129,39 +129,34 @@ def get_missing_assignments(student_name):
 def extract_score_from_report(report: str):
     if not report: return None
     text = report
-    m = re.search(r"OVERALL SCORE:\s*(\d{1,3})\s*%", text, re.IGNORECASE)
-    if m and 0 <= int(m.group(1)) <= 100: return float(m.group(1))
-    m = re.search(r"(\d{1,3})\s*/\s*(\d{1,3})", text)
-    if m and int(m.group(2)) > 0 and int(m.group(1)) <= int(m.group(2)):
-        return round(int(m.group(1)) / int(m.group(2)) * 100, 1)
+    m = re.search(r"OVERALL SCORE:\s*(\d{1,3}(?:\.\d+)?)\s*%", text, re.IGNORECASE)
+    if m and 0 <= float(m.group(1)) <= 100: return float(m.group(1))
     return None
 
 def analyze_homework_ai(student_name, assignment_title, instructions, file_url, mime_type, file_name, mark_scheme_file=None):
     """
-    Splits the PDF into 10-page chunks, grades each chunk sequentially, 
-    and combines the results into one massive report without hitting token limits.
+    Splits the PDF into 5-page chunks, grades each chunk strictly against the mark scheme,
+    and calculates the final grade using Python math (not AI math).
     """
     
-    # 1. Download the PDF if it's not a URL link
     if mime_type == "text/url":
-        # Fallback for external links (cannot be split)
-        st.warning("External links cannot be split into chunks. AI may fail to read them.")
-        pdf_bytes = None
-        total_pages = 1
-    else:
-        try:
-            r = requests.get(file_url)
-            r.raise_for_status()
-            pdf_bytes = r.content
-            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-            total_pages = len(reader.pages)
-        except Exception as e:
-            raise Exception(f"Failed to download/read student PDF: {e}")
+        raise Exception("External links cannot be split and processed. Please upload the actual PDF file.")
 
-    chunk_size = 10
+    try:
+        r = requests.get(file_url)
+        r.raise_for_status()
+        pdf_bytes = r.content
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        total_pages = len(reader.pages)
+    except Exception as e:
+        raise Exception(f"Failed to download/read student PDF: {e}")
+
+    chunk_size = 5 # 5 pages per chunk ensures deep focus
     num_chunks = math.ceil(total_pages / chunk_size)
     
     combined_breakdown = ""
+    total_earned = 0.0
+    total_possible = 0.0
     
     if total_pages > chunk_size:
         st.info(f"📄 Document is {total_pages} pages long. Splitting into {num_chunks} chunks for complete grading...")
@@ -169,27 +164,19 @@ def analyze_homework_ai(student_name, assignment_title, instructions, file_url, 
     else:
         progress_bar = None
 
-    # 2. Loop through chunks (or just 1 if small)
     for i in range(num_chunks):
         start_page = i * chunk_size
         end_page = min((i + 1) * chunk_size, total_pages)
         
-        # Prepare the chunk PDF
-        if pdf_bytes and total_pages > chunk_size:
-            writer = pypdf.PdfWriter()
-            for p in range(start_page, end_page):
-                writer.add_page(reader.pages[p])
-            chunk_bytes = io.BytesIO()
-            writer.write(chunk_bytes)
-            chunk_bytes.seek(0)
-            upload_bytes = chunk_bytes
-            chunk_label = f"Pages {start_page + 1} to {end_page}"
-        else:
-            upload_bytes = io.BytesIO(pdf_bytes) if pdf_bytes else None
-            chunk_label = "Full Document"
+        writer = pypdf.PdfWriter()
+        for p in range(start_page, end_page):
+            writer.add_page(reader.pages[p])
+        chunk_bytes = io.BytesIO()
+        writer.write(chunk_bytes)
+        chunk_bytes.seek(0)
         
         if progress_bar:
-            st.write(f"🧠 Grading chunk {i+1} of {num_chunks} ({chunk_label})...")
+            st.write(f"🧠 Grading chunk {i+1} of {num_chunks}...")
 
         chunk_prompt = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Candidate Name: {student_name}
@@ -197,17 +184,17 @@ Assignment: {assignment_title}
 General Marking Guidelines: {instructions}
 
 *** CRITICAL INSTRUCTION ***
-You are grading {chunk_label} of a larger document.
-You MUST grade EVERY SINGLE QUESTION on these pages.
-Do NOT summarize. Do NOT stop early. 
+1. The page numbers printed on this document may start from a random number (e.g., Page 84 or Page 114) because it is a scan of a textbook. IGNORE the printed page numbers completely. Only grade the questions physically present in the images provided.
+2. You MUST compare the student's answers EXACTLY against the provided Mark Scheme. If the student's answer does not match the Mark Scheme keyword for keyword, award 0 marks.
+3. Do NOT guess. Do NOT give marks for effort. Grade strictly.
 
-You MUST strictly use this Markdown format:
-### 2. Detailed Question-by-Question Breakdown & Mark Scheme Alignment
-
-**Page [X] – Q[Number] [[Marks] Marks]:**
-- [Criteria 1]: [X]/[Y] (Feedback on what they did)
-- [Criteria 2]: [X]/[Y] (Feedback)
+You MUST format your output EXACTLY like this for every question you see:
+**Question [Number] [[Marks] Marks]:**
+- [Criteria]: [X]/[Y] (Reason)
 Subtotal: [X]/[Y]
+
+At the very end of your response, you MUST output a summary line formatted exactly like this:
+TOTAL CHUNK SCORE: [Total Earned] / [Total Possible]
 """
 
         chunk_result = ""
@@ -222,18 +209,15 @@ Subtotal: [X]/[Y]
                     file=io.BytesIO(ms_bytes),
                     config=types.UploadFileConfig(mime_type="application/pdf")
                 )
-                contents.append("MARK SCHEME:")
+                contents.append("OFFICIAL MARK SCHEME:")
                 contents.append(ms_upload)
             
-            if mime_type == "text/url":
-                contents.append(f"STUDENT LINK: {file_url} (AI cannot read this, please output a note saying 'Cannot read link')")
-            else:
-                student_upload = gemini_client.files.upload(
-                    file=upload_bytes,
-                    config=types.UploadFileConfig(mime_type="application/pdf")
-                )
-                contents.append("STUDENT SUBMISSION:")
-                contents.append(student_upload)
+            student_upload = gemini_client.files.upload(
+                file=chunk_bytes,
+                config=types.UploadFileConfig(mime_type="application/pdf")
+            )
+            contents.append("STUDENT SUBMISSION PAGES:")
+            contents.append(student_upload)
             
             res = gemini_client.models.generate_content(
                 model="gemini-3.8-flash",
@@ -243,13 +227,11 @@ Subtotal: [X]/[Y]
             chunk_result = res.text
             
         except Exception as e:
-            st.warning(f"⚠️ Gemini failed on {chunk_label}. Falling back to OpenAI...")
+            st.warning(f"⚠️ Gemini failed on chunk {i+1}. Falling back to OpenAI...")
             
-            # OpenAI Fallback
             content_items = [{"type": "input_text", "text": chunk_prompt}]
-            if mime_type != "text/url" and upload_bytes:
-                b64 = base64.b64encode(upload_bytes.getvalue()).decode("utf-8")
-                content_items.append({"type": "input_file", "filename": "chunk.pdf", "file_data": f"data:application/pdf;base64,{b64}"})
+            b64 = base64.b64encode(chunk_bytes.getvalue()).decode("utf-8")
+            content_items.append({"type": "input_file", "filename": "chunk.pdf", "file_data": f"data:application/pdf;base64,{b64}"})
             
             if mark_scheme_file:
                 ms_b64 = base64.b64encode(mark_scheme_file.getvalue()).decode("utf-8")
@@ -258,34 +240,43 @@ Subtotal: [X]/[Y]
             
             oa_res = openai_client.responses.create(
                 model="gpt-4o",
-                input=[{"role": "system", "content": "Strict Examiner. Grade every question."}, {"role": "user", "content": content_items}],
-                max_output_tokens=16384
+                input=[{"role": "system", "content": "Strict Examiner. Grade against mark scheme. Ignore printed page numbers."}, {"role": "user", "content": content_items}],
+                max_output_tokens=4096
             )
             chunk_result = oa_res.output_text
 
+        # Extract the math from this chunk so Python can calculate the final grade
+        score_match = re.search(r"TOTAL CHUNK SCORE:\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", chunk_result, re.IGNORECASE)
+        if score_match:
+            total_earned += float(score_match.group(1))
+            total_possible += float(score_match.group(2))
+        else:
+            # Fallback if AI forgets the total line
+            st.warning(f"⚠️ AI forgot to calculate the chunk total. Trying to extract manually...")
+            subs = re.findall(r"Subtotal:\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", chunk_result, re.IGNORECASE)
+            for earned, possible in subs:
+                total_earned += float(earned)
+                total_possible += float(possible)
+            
         combined_breakdown += chunk_result + "\n\n"
         
         if progress_bar:
             progress_bar.progress((i + 1) / num_chunks)
 
-    # 3. Generate the Summary based on the full breakdown
+    # Calculate exact grade in Python
+    percentage = (total_earned / total_possible * 100) if total_possible > 0 else 0.0
+    grade = "A*" if percentage >= 85 else "A" if percentage >= 75 else "B" if percentage >= 65 else "C" if percentage >= 55 else "D/U"
+
+    # Ask AI for the summary/action plan based on the full breakdown
     if progress_bar:
-        st.write("🧠 Generating Executive Summary and Action Plan...")
+        st.write("🧠 Generating Action Plan...")
         
-    summary_prompt = f"""You are the Chief Examiner. I have just finished grading a massive document chunk by chunk.
-Here is the complete detailed breakdown of all the student's answers:
-{combined_breakdown[:60000]} 
+    summary_prompt = f"""You are the Chief Examiner. Here is the detailed breakdown of a student's answers:
+{combined_breakdown[:40000]}
 
-Based on this breakdown, generate the top and bottom sections of the report in this EXACT format:
+The student scored {total_earned:.1f}/{total_possible:.1f} ({percentage:.1f}%) - Grade {grade}.
 
-**OVERALL SCORE: X%** (where X is calculated from the total marks in the breakdown)
-
-### 1. Executive Summary & Grade Equivalent
-Candidate Name: {student_name}
-Total Marks Available: [Sum all marks from breakdown]
-Marks Earned: [Sum all earned marks from breakdown]
-Percentage: [Insert %]
-Cambridge IGCSE Grade Equivalent: [Insert Grade and 1-sentence summary]
+Write EXACTLY this format:
 
 ### 3. Specific Biological Misconceptions & Missing Mark Points
 - [List 3-4 specific errors from the breakdown]
@@ -309,15 +300,21 @@ Priority 3: [Topic]
         )
         final_summary = oa_sum.output_text
 
-    # 4. Assemble the final document (Summary Top + Detailed Breakdown + Summary Bottom)
-    # We split the summary to insert the huge breakdown in the middle.
-    parts = final_summary.split("### 3. Specific Biological")
-    if len(parts) == 2:
-        final_report = parts[0] + "\n\n" + combined_breakdown + "\n\n### 3. Specific Biological" + parts[1]
-    else:
-        # Fallback if the AI messed up the headers
-        final_report = final_summary + "\n\n" + combined_breakdown
+    # Assemble final document
+    header = f"""**OVERALL SCORE: {percentage:.1f}%**
 
+### 1. Executive Summary & Grade Equivalent
+Candidate Name: {student_name}
+Total Marks Available: {total_possible:.1f}
+Marks Earned: {total_earned:.1f}
+Percentage: {percentage:.1f}%
+Cambridge IGCSE Grade Equivalent: {grade}
+
+### 2. Detailed Question-by-Question Breakdown & Mark Scheme Alignment
+
+"""
+    
+    final_report = header + combined_breakdown + "\n\n" + final_summary
     return final_report
 
 
@@ -370,7 +367,6 @@ if portal_tab == VIEW_STUDENT:
                 drive_link = ""
 
                 if submit_mode == "📁 Direct File Upload (Downloaded PDF/Image)":
-                    st.caption("💡 **Tip:** If using Google Drive on mobile, download the file to your phone first before uploading here.")
                     uploaded_file = st.file_uploader(
                         "Upload Homework File (PDF, PNG, JPG)",
                         type=["pdf", "png", "jpg", "jpeg"],
