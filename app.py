@@ -6,6 +6,8 @@ import re
 import requests
 import io
 import base64
+import math
+import pypdf
 from supabase import create_client
 from google import genai
 from google.genai import types
@@ -90,37 +92,24 @@ VIEW_TEACHER = "🔒 Teacher Secure Portal"
 # ---------------------------------------------------------
 
 def _normalize_title(t: str) -> str:
-    """Lowercase, keep only letters/numbers/spaces."""
     return "".join(c if (c.isalnum() or c == " ") else " " for c in (t or "").lower()).strip()
 
-
 def _titles_match(deadline_title: str, submission_title: str) -> bool:
-    """
-    Fuzzy match between a deadline title and a submission title.
-    Handles: case, punctuation, extra words, word order differences.
-    """
     a = _normalize_title(deadline_title)
     b = _normalize_title(submission_title)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    if a in b or b in a:
-        return True
+    if not a or not b: return False
+    if a == b: return True
+    if a in b or b in a: return True
     a_words = set(w for w in a.split() if len(w) > 2)
     b_words = set(w for w in b.split() if len(w) > 2)
-    if not a_words or not b_words:
-        return False
+    if not a_words or not b_words: return False
     overlap = len(a_words & b_words)
-    ratio = overlap / min(len(a_words), len(b_words))
-    return ratio >= 0.5
-
+    return (overlap / min(len(a_words), len(b_words))) >= 0.5
 
 def get_missing_assignments(student_name):
     try:
         deadlines_res = supabase.table("deadlines").select("*").execute()
         all_deadlines = [(row["assignment_title"], row["due_date"]) for row in deadlines_res.data]
-
         subs_res = supabase.table("submissions").select("assignment_title").ilike("student_name", student_name).execute()
         submitted_titles = [row["assignment_title"] for row in subs_res.data]
     except Exception:
@@ -128,192 +117,208 @@ def get_missing_assignments(student_name):
 
     missing = []
     now_dt = datetime.datetime.now()
-
     for d_title, d_date_str in all_deadlines:
         already_submitted = any(_titles_match(d_title, st) for st in submitted_titles)
-        if already_submitted:
-            continue
+        if already_submitted: continue
         try:
             due_dt = datetime.datetime.strptime(d_date_str, "%Y-%m-%d %H:%M:%S")
-            if now_dt > due_dt:
-                missing.append((d_title, d_date_str))
-        except:
-            pass
+            if now_dt > due_dt: missing.append((d_title, d_date_str))
+        except: pass
     return missing
 
-
 def extract_score_from_report(report: str):
-    """Best-effort extraction of a numeric percentage from the AI report text."""
-    if not report:
-        return None
+    if not report: return None
     text = report
-
     m = re.search(r"OVERALL SCORE:\s*(\d{1,3})\s*%", text, re.IGNORECASE)
-    if m and 0 <= int(m.group(1)) <= 100:
-        return float(m.group(1))
-
-    m = re.search(r"(?:overall|total|final|estimated)\s*(?:score|mark)[^\d]{0,10}(\d{1,3})\s*%", text, re.IGNORECASE)
-    if m and 0 <= int(m.group(1)) <= 100:
-        return float(m.group(1))
-
-    m = re.search(r"(\d{1,3})\s*/\s*(\d{1,3})\s*(?:marks?|/\s*\d+)?", text)
-    if m:
-        num, den = int(m.group(1)), int(m.group(2))
-        if den > 0 and num <= den:
-            return round(num / den * 100, 1)
-
-    matches = re.findall(r"(\d{1,3})\s*%", text)
-    if matches:
-        vals = [int(v) for v in matches if 0 <= int(v) <= 100]
-        if vals:
-            return float(max(vals))
+    if m and 0 <= int(m.group(1)) <= 100: return float(m.group(1))
+    m = re.search(r"(\d{1,3})\s*/\s*(\d{1,3})", text)
+    if m and int(m.group(2)) > 0 and int(m.group(1)) <= int(m.group(2)):
+        return round(int(m.group(1)) / int(m.group(2)) * 100, 1)
     return None
-
 
 def analyze_homework_ai(student_name, assignment_title, instructions, file_url, mime_type, file_name, mark_scheme_file=None):
     """
-    Tries Google Gemini first. Falls back to OpenAI if Gemini fails.
-    OpenAI fallback uses the Responses API which supports PDFs natively.
+    Splits the PDF into 10-page chunks, grades each chunk sequentially, 
+    and combines the results into one massive report without hitting token limits.
     """
+    
+    # 1. Download the PDF if it's not a URL link
+    if mime_type == "text/url":
+        # Fallback for external links (cannot be split)
+        st.warning("External links cannot be split into chunks. AI may fail to read them.")
+        pdf_bytes = None
+        total_pages = 1
+    else:
+        try:
+            r = requests.get(file_url)
+            r.raise_for_status()
+            pdf_bytes = r.content
+            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+            total_pages = len(reader.pages)
+        except Exception as e:
+            raise Exception(f"Failed to download/read student PDF: {e}")
 
-    prompt_text = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
+    chunk_size = 10
+    num_chunks = math.ceil(total_pages / chunk_size)
+    
+    combined_breakdown = ""
+    
+    if total_pages > chunk_size:
+        st.info(f"📄 Document is {total_pages} pages long. Splitting into {num_chunks} chunks for complete grading...")
+        progress_bar = st.progress(0)
+    else:
+        progress_bar = None
+
+    # 2. Loop through chunks (or just 1 if small)
+    for i in range(num_chunks):
+        start_page = i * chunk_size
+        end_page = min((i + 1) * chunk_size, total_pages)
+        
+        # Prepare the chunk PDF
+        if pdf_bytes and total_pages > chunk_size:
+            writer = pypdf.PdfWriter()
+            for p in range(start_page, end_page):
+                writer.add_page(reader.pages[p])
+            chunk_bytes = io.BytesIO()
+            writer.write(chunk_bytes)
+            chunk_bytes.seek(0)
+            upload_bytes = chunk_bytes
+            chunk_label = f"Pages {start_page + 1} to {end_page}"
+        else:
+            upload_bytes = io.BytesIO(pdf_bytes) if pdf_bytes else None
+            chunk_label = "Full Document"
+        
+        if progress_bar:
+            st.write(f"🧠 Grading chunk {i+1} of {num_chunks} ({chunk_label})...")
+
+        chunk_prompt = f"""You are a Senior Cambridge IGCSE Biology (0610 / 0970) Chief Examiner.
 Candidate Name: {student_name}
-Assignment/Quiz Title: {assignment_title}
+Assignment: {assignment_title}
 General Marking Guidelines: {instructions}
 
-EVALUATION TASK:
-1. Examine the student's submission carefully. This includes typed text, handwritten answers, and scientific diagrams/charts.
-2. If an Official Cambridge Mark Scheme is provided, compare the student's exact written answers line-by-line against that Mark Scheme.
-3. Identify precisely where the candidate earned marks and where marks were lost (missing keywords, incorrect terminology, incomplete explanations, incorrect diagrams).
-4. Provide a structured Markdown report.
+*** CRITICAL INSTRUCTION ***
+You are grading {chunk_label} of a larger document.
+You MUST grade EVERY SINGLE QUESTION on these pages.
+Do NOT summarize. Do NOT stop early. 
 
-IMPORTANT: At the very top of your report, on its own line, write the final mark in this exact format:
-**OVERALL SCORE: X%**
-(where X is a number between 0 and 100, representing the candidate's estimated percentage.)
+You MUST strictly use this Markdown format:
+### 2. Detailed Question-by-Question Breakdown & Mark Scheme Alignment
 
-Then continue with the report sections using these exact headers:
-### 1. **Executive Summary & Grade Equivalent**
-### 2. **Detailed Question-by-Question Breakdown & Mark Scheme Alignment**
-### 3. **Specific Biological Misconceptions & Missing Mark Points**
-### 4. **Actionable Revision Plan for Next Session**
+**Page [X] – Q[Number] [[Marks] Marks]:**
+- [Criteria 1]: [X]/[Y] (Feedback on what they did)
+- [Criteria 2]: [X]/[Y] (Feedback)
+Subtotal: [X]/[Y]
 """
 
-    # =========================================================
-    # ATTEMPT 1: GOOGLE GEMINI
-    # =========================================================
+        chunk_result = ""
+        
+        # Try Gemini first
+        try:
+            contents = [chunk_prompt]
+            
+            if mark_scheme_file:
+                ms_bytes = mark_scheme_file.getvalue()
+                ms_upload = gemini_client.files.upload(
+                    file=io.BytesIO(ms_bytes),
+                    config=types.UploadFileConfig(mime_type="application/pdf")
+                )
+                contents.append("MARK SCHEME:")
+                contents.append(ms_upload)
+            
+            if mime_type == "text/url":
+                contents.append(f"STUDENT LINK: {file_url} (AI cannot read this, please output a note saying 'Cannot read link')")
+            else:
+                student_upload = gemini_client.files.upload(
+                    file=upload_bytes,
+                    config=types.UploadFileConfig(mime_type="application/pdf")
+                )
+                contents.append("STUDENT SUBMISSION:")
+                contents.append(student_upload)
+            
+            res = gemini_client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(max_output_tokens=8192)
+            )
+            chunk_result = res.text
+            
+        except Exception as e:
+            st.warning(f"⚠️ Gemini failed on {chunk_label}. Falling back to OpenAI...")
+            
+            # OpenAI Fallback
+            content_items = [{"type": "input_text", "text": chunk_prompt}]
+            if mime_type != "text/url" and upload_bytes:
+                b64 = base64.b64encode(upload_bytes.getvalue()).decode("utf-8")
+                content_items.append({"type": "input_file", "filename": "chunk.pdf", "file_data": f"data:application/pdf;base64,{b64}"})
+            
+            if mark_scheme_file:
+                ms_b64 = base64.b64encode(mark_scheme_file.getvalue()).decode("utf-8")
+                content_items.append({"type": "input_text", "text": "\n\n--- MARK SCHEME ---\n"})
+                content_items.append({"type": "input_file", "filename": "ms.pdf", "file_data": f"data:application/pdf;base64,{ms_b64}"})
+            
+            oa_res = openai_client.responses.create(
+                model="gpt-4o",
+                input=[{"role": "system", "content": "Strict Examiner. Grade every question."}, {"role": "user", "content": content_items}],
+                max_output_tokens=16384
+            )
+            chunk_result = oa_res.output_text
+
+        combined_breakdown += chunk_result + "\n\n"
+        
+        if progress_bar:
+            progress_bar.progress((i + 1) / num_chunks)
+
+    # 3. Generate the Summary based on the full breakdown
+    if progress_bar:
+        st.write("🧠 Generating Executive Summary and Action Plan...")
+        
+    summary_prompt = f"""You are the Chief Examiner. I have just finished grading a massive document chunk by chunk.
+Here is the complete detailed breakdown of all the student's answers:
+{combined_breakdown[:60000]} 
+
+Based on this breakdown, generate the top and bottom sections of the report in this EXACT format:
+
+**OVERALL SCORE: X%** (where X is calculated from the total marks in the breakdown)
+
+### 1. Executive Summary & Grade Equivalent
+Candidate Name: {student_name}
+Total Marks Available: [Sum all marks from breakdown]
+Marks Earned: [Sum all earned marks from breakdown]
+Percentage: [Insert %]
+Cambridge IGCSE Grade Equivalent: [Insert Grade and 1-sentence summary]
+
+### 3. Specific Biological Misconceptions & Missing Mark Points
+- [List 3-4 specific errors from the breakdown]
+
+### 4. Actionable Revision Plan for Next Session
+Priority 1: [Topic]
+Priority 2: [Topic]
+Priority 3: [Topic]
+"""
+    
     try:
-        contents = [prompt_text]
-
-        if mark_scheme_file:
-            ms_bytes = mark_scheme_file.getvalue()
-            ms_upload = gemini_client.files.upload(
-                file=io.BytesIO(ms_bytes),
-                config=types.UploadFileConfig(mime_type="application/pdf")
-            )
-            contents.append("OFFICIAL CAMBRIDGE MARK SCHEME ATTACHMENT:")
-            contents.append(ms_upload)
-
-        if mime_type == "text/url":
-            contents.append("STUDENT SUBMISSION ATTACHMENT:")
-            contents.append(f"Student Shared Google Drive Link: {file_url}")
-        else:
-            response = requests.get(file_url)
-            if response.status_code != 200:
-                raise Exception(f"Failed to download student file from Supabase: {response.status_code}")
-
-            student_upload = gemini_client.files.upload(
-                file=io.BytesIO(response.content),
-                config=types.UploadFileConfig(mime_type="application/pdf")
-            )
-            contents.append("STUDENT SUBMISSION ATTACHMENT:")
-            contents.append(student_upload)
-
-        response = gemini_client.models.generate_content(
+        summary_res = gemini_client.models.generate_content(
             model="gemini-3.8-flash",
-            contents=contents,
+            contents=summary_prompt
         )
-
-        if not response.text or not response.text.strip():
-            raise Exception("Gemini returned an empty response. The PDF is likely too large (exceeds token limit).")
-
-        st.success("✅ Report generated using Google Gemini!")
-        return response.text
-
-    # =========================================================
-    # ATTEMPT 2: OPENAI FALLBACK (Responses API)
-    # =========================================================
-    except Exception as gemini_error:
-        st.warning(f"⚠️ Gemini failed. Switching to OpenAI... (Reason: {gemini_error})")
-
-        content_items = [{"type": "input_text", "text": prompt_text}]
-
-        if mime_type == "text/url":
-            content_items[0]["text"] += (
-                f"\n\n[STUDENT SUBMISSION IS A GOOGLE DRIVE LINK: {file_url}. "
-                f"The AI cannot access external links. Please download and upload directly.]"
-            )
-        else:
-            r = requests.get(file_url)
-            if r.status_code != 200:
-                raise Exception(f"Failed to download student file from Supabase: {r.status_code}")
-
-            b64 = base64.b64encode(r.content).decode("utf-8")
-            is_image = bool(mime_type) and mime_type.startswith("image/")
-
-            if is_image:
-                content_items.append({
-                    "type": "input_image",
-                    "image_url": f"data:{mime_type};base64,{b64}",
-                })
-            else:
-                content_items.append({
-                    "type": "input_file",
-                    "filename": file_name or "submission.pdf",
-                    "file_data": f"data:application/pdf;base64,{b64}",
-                })
-
-        if mark_scheme_file:
-            ms_bytes = mark_scheme_file.getvalue()
-            ms_b64 = base64.b64encode(ms_bytes).decode("utf-8")
-            ms_type = getattr(mark_scheme_file, "type", "") or "application/pdf"
-            ms_name = getattr(mark_scheme_file, "name", "mark_scheme.pdf")
-
-            content_items.append({
-                "type": "input_text",
-                "text": "\n\n--- OFFICIAL CAMBRIDGE MARK SCHEME ---\n",
-            })
-
-            if ms_type.startswith("image/"):
-                content_items.append({
-                    "type": "input_image",
-                    "image_url": f"data:{ms_type};base64,{ms_b64}",
-                })
-            else:
-                content_items.append({
-                    "type": "input_file",
-                    "filename": ms_name,
-                    "file_data": f"data:application/pdf;base64,{ms_b64}",
-                })
-
-        # STRICT SYSTEM PROMPT FOR OPENAI
-        oa_response = openai_client.responses.create(
+        final_summary = summary_res.text
+    except Exception:
+        oa_sum = openai_client.responses.create(
             model="gpt-4o",
-            input=[
-                {
-                    "role": "system", 
-                    "content": "You are a strict Cambridge IGCSE Biology Examiner. You must output Markdown exactly as requested. Do not add any conversational filler, greetings, or sign-offs. Start immediately with the Overall Score."
-                },
-                {"role": "user", "content": content_items}
-            ],
+            input=[{"role": "user", "content": summary_prompt}]
         )
+        final_summary = oa_sum.output_text
 
-        content = oa_response.output_text
+    # 4. Assemble the final document (Summary Top + Detailed Breakdown + Summary Bottom)
+    # We split the summary to insert the huge breakdown in the middle.
+    parts = final_summary.split("### 3. Specific Biological")
+    if len(parts) == 2:
+        final_report = parts[0] + "\n\n" + combined_breakdown + "\n\n### 3. Specific Biological" + parts[1]
+    else:
+        # Fallback if the AI messed up the headers
+        final_report = final_summary + "\n\n" + combined_breakdown
 
-        if not content or not content.strip():
-            raise Exception("OpenAI returned an empty response. The PDF may exceed the token limit.")
-
-        st.success("✅ Report generated using OpenAI GPT-4o (Fallback)!")
-        return content
+    return final_report
 
 
 # ---------------------------------------------------------
@@ -760,7 +765,6 @@ elif portal_tab == VIEW_TEACHER:
                     else:
                         st.info("💡 AI Draft is ready below. Review and edit as needed before final approval.")
                         
-                        # CLEAR DRAFT BUTTON
                         if st.button("🔄 Clear Draft & Regenerate", type="secondary"):
                             supabase.table("submissions").update({
                                 "ai_draft": "",
